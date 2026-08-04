@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+venv/
+.idea/
+.vscode/
+outputs/
+ppt_figures/
+/data/
+FraudCaseStudy.xlsx
+electricity_vs_pm25.csv
+income_vs_electricity.csv
+*.joblib

@@ -1,135 +1,59 @@
-# 💳 Fraud Risk Analysis and Vendor Evaluation
+# Fraud Detection Case Study
 
-A machine learning project for analyzing fraudulent payment applications through exploratory data analysis, feature engineering, model training, and performance evaluation.
+A reproducible Python project for application-risk monitoring, fraud-model comparison, and vendor profitability analysis. It retains the original technology stack: pandas, NumPy, Matplotlib, and scikit-learn with logistic regression, decision tree, and random forest models.
 
----
-
-## ✨ Overview
-
-This project analyzes fraud risk in payment applications using behavioral, device, and temporal data.
-
-The objective is to identify fraudulent applications, compare machine learning models, and evaluate their effectiveness using industry-standard classification metrics.
-
-The project covers the complete machine learning workflow from data preprocessing to model evaluation.
-
----
-
-## 🚀 Features
-
-✅ Exploratory Data Analysis (EDA)
-
-✅ Data preprocessing and cleaning
-
-✅ Feature engineering
-
-✅ Logistic Regression model
-
-✅ Random Forest model
-
-✅ Model evaluation (Accuracy, Precision, Recall, ROC-AUC)
-
-✅ Fraud pattern visualization
-
----
-
-## 🛠️ Tech Stack
-
-- Python
-- Pandas
-- NumPy
-- Scikit-learn
-- Matplotlib
-- OpenPyXL
-
----
-
-## 📂 Project Structure
+## Project layout
 
 ```text
-fraud-risk-analysis/
-
-├── data/
-│   ├── p1_daily_metrics.csv
-│   ├── p1_daily_metrics_by_product.csv
-│   ├── p2_dataset_clean.csv
-│   └── FraudCaseStudy.xlsx
-│
-├── src/
-│   ├── exploratory_analysis.py
-│   ├── preprocess_data.py
-│   ├── train_models.py
-│   ├── evaluate_models.py
-│   └── visualization.py
-│
-├── figures/
-│
-├── README.md
-└── requirements.txt
+fraud_detection/                 Reusable cleaning, modeling, and profit logic
+tests/                           Synthetic-data unit tests
+prepare_application_metrics.py  Build application and product daily metrics
+plot_application_anomalies.py   Plot a user-specified anomaly window
+clean_vendor_dataset.py         Normalize the vendor-enriched dataset
+compare_fraud_models.py         Cross-validate and compare three model families
+evaluate_vendor_profit.py       Compare with/without-vendor decision economics
 ```
 
----
+## Data
 
-## 📊 Workflow
+Place `FraudCaseStudy.xlsx` in the repository root. The workbook is intentionally ignored by Git because case-study or customer data should not be published by default. The scripts expect sheets named `p1-dataset` and `p2-dataset`; both names can be overridden from the command line.
 
-```
-Raw Data
-      │
-      ▼
-Exploratory Data Analysis
-      │
-      ▼
-Data Cleaning & Feature Engineering
-      │
-      ▼
-Model Training
-(Logistic Regression / Random Forest)
-      │
-      ▼
-Model Evaluation
-      │
-      ▼
-Fraud Risk Assessment
+## Setup
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
----
+## Run the workflows
 
-## 📈 Results
+```bash
+python prepare_application_metrics.py
+python plot_application_anomalies.py --anomaly-start 2019-06-25 --anomaly-end 2019-07-04
 
-The project compares multiple machine learning models for fraud detection.
+python clean_vendor_dataset.py
+python compare_fraud_models.py
+python evaluate_vendor_profit.py --approve-threshold 0.2 --decline-threshold 0.8
+```
 
-**Current Performance**
+Generated CSVs and figures are written under `outputs/`.
 
-| Model | Accuracy | ROC-AUC |
-|--------|---------:|--------:|
-| Logistic Regression | 0.80 | 0.89 |
-| Random Forest | *Coming Soon* | *Coming Soon* |
+## Evaluation design
 
----
+- Missing-value imputation and categorical encoding are fitted inside sklearn pipelines, preventing holdout leakage.
+- Candidate models are ranked by cross-validated PR-AUC on the training partition.
+- Only the selected model receives final holdout metrics.
+- Accuracy is reported alongside PR-AUC, ROC-AUC, balanced accuracy, precision, and recall.
+- The no-vendor scenario excludes every field identified as FraudKiller data in the workbook definition.
 
-## 📋 Roadmap
+The anomaly dates and profit assumptions remain explicit case-study inputs rather than claimed facts. Change them through CLI thresholds or the `ProfitAssumptions` dataclass as appropriate for the business context.
 
-✅ Data preprocessing
+## Test
 
-✅ Exploratory data analysis
+```bash
+python -m unittest discover -s tests -v
+```
 
-✅ Feature engineering
-
-✅ Logistic Regression
-
-✅ Random Forest
-
-✅ Model evaluation
-
----
-
-## 🎯 Goal
-
-The goal of this project is to understand the complete machine learning pipeline for fraud detection, from raw transaction data to model evaluation, while building practical experience with real-world classification problems.
-
----
-
-## 📌 Status
-
-✅ Completed
-
-This project was developed as part of a machine learning case study and demonstrates an end-to-end fraud analysis workflow.
+GitHub Actions runs the same command on every push and pull request.
