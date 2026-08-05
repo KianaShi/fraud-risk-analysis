@@ -1,0 +1,4 @@
+model,cv_roc_auc,cv_pr_auc,cv_balanced_accuracy,selected,holdout_roc_auc,holdout_pr_auc,holdout_accuracy,holdout_balanced_accuracy,holdout_precision,holdout_recall
+decision_tree,0.934,0.9345,0.8839,True,0.9453,0.9446,0.9009,0.899,0.9456,0.8433
+random_forest,0.9159,0.918,0.8652,False,,,,,,
+logistic_regression,0.8732,0.8661,0.8012,False,,,,,,

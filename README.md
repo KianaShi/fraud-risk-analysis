@@ -1,309 +1,129 @@
-# Fraud Risk Analysis
+# Fraud Risk Analysis and Vendor Evaluation
 
-This project explores how application data can be used to identify potentially fraudulent activity and support real-world approval decisions.
+A reproducible Python case study for payment-application monitoring, fraud-model comparison, and third-party vendor evaluation.
 
-The goal was not simply to train the model with the highest accuracy. I wanted to understand which application patterns were associated with fraud, compare several interpretable classification models, and translate predicted probabilities into practical actions such as approval, decline, or manual review.
+## Overview
 
-The analysis was completed using 2,775 application records containing identity, device, location, email, product, and time-related information.
+The project analyzes application, identity, device, location, email, and temporal features to:
 
-## Project Questions
+- monitor application volume and fraud-risk trends;
+- compare Logistic Regression, Decision Tree, and Random Forest classifiers;
+- convert fraud probabilities into approve, decline, and manual-review decisions; and
+- estimate the incremental value of FraudKiller data under explicit business assumptions.
 
-I organized the project around four main questions:
+The implementation uses pandas, NumPy, Matplotlib, and scikit-learn—the original project technology stack.
 
-1. Are there unusual application patterns or time periods that may indicate elevated fraud activity?
-2. Which applicant and application features are most useful for distinguishing fraud from legitimate activity?
-3. Which classification model performs most reliably on unseen data?
-4. Does third-party vendor data improve fraud detection enough to justify its cost?
-
-## Key Results
-
-The selected model achieved the following performance on the holdout dataset:
-
-* **ROC-AUC:** 0.945
-* **Accuracy:** 90.1%
-* **Precision:** 94.6%
-* **Recall:** 84.3%
-
-Because fraud detection involves an imbalanced and cost-sensitive outcome, I used cross-validated **PR-AUC** to select the final model rather than relying on accuracy alone.
-
-The final analysis also converted fraud probabilities into three operational decisions:
-
-* **Approve:** low predicted fraud risk
-* **Manual review:** uncertain or moderate risk
-* **Decline:** high predicted fraud risk
-
-This made it possible to evaluate the model as a decision-support system rather than only as a statistical classifier.
-
-## What I Did
-
-### 1. Explored application behavior
-
-I analyzed application volume, fraud rates, product activity, and temporal patterns to identify periods with unusual behavior.
-
-The exploratory analysis focused on features including:
-
-* Applicant identity information
-* Email characteristics
-* Device and browser information
-* IP and geographic signals
-* Product selection
-* Application timing
-* Third-party fraud-risk attributes
-
-This stage helped identify potentially useful signals while also highlighting fields that could introduce leakage or unstable model behavior.
-
-### 2. Built a leakage-safe preprocessing pipeline
-
-I created a reusable scikit-learn pipeline so that preprocessing steps were learned only from the training data.
-
-The pipeline included:
-
-* Missing-value handling
-* Numerical and categorical feature separation
-* Categorical encoding
-* Feature transformation
-* Model training
-* Cross-validation
-* Holdout evaluation
-
-Keeping preprocessing inside the modeling pipeline reduced the risk of accidentally using information from the holdout set during training.
-
-### 3. Compared classification models
-
-I compared three model families:
-
-* Logistic Regression
-* Decision Tree
-* Random Forest
-
-Logistic Regression provided a useful interpretable baseline, while Decision Tree and Random Forest captured nonlinear relationships and interactions between fraud-related signals.
-
-The models were compared using cross-validated PR-AUC. After selecting the best-performing model, I evaluated it once on the untouched holdout dataset.
-
-Reported metrics included:
-
-* PR-AUC
-* ROC-AUC
-* Accuracy
-* Balanced accuracy
-* Precision
-* Recall
-* Confusion matrix
-
-### 4. Designed a fraud decision strategy
-
-A fraud probability by itself is not a business decision.
-
-I mapped the model scores into approve, decline, and manual-review bands using configurable probability thresholds. This allowed me to examine the tradeoff between:
-
-* Approving legitimate applicants
-* Preventing fraudulent approvals
-* Sending uncertain applications to manual review
-* Avoiding unnecessary declines
-
-The thresholds are intentionally configurable because the best decision policy depends on the relative cost of fraud losses, review operations, customer friction, and false declines.
-
-### 5. Evaluated third-party vendor data
-
-The dataset included additional attributes supplied by an external fraud-data vendor.
-
-To evaluate whether these features were economically useful, I compared two scenarios:
-
-* A model trained with the vendor-provided features
-* A model trained without those features
-
-I then estimated the financial impact of each strategy using configurable assumptions for fraud losses, approval value, manual-review cost, and vendor cost.
-
-This part of the project was important because a feature can improve predictive performance without necessarily creating enough financial value to justify its acquisition cost.
-
-## Repository Structure
+## Repository structure
 
 ```text
-<<<<<<< Updated upstream
 fraud_detection/
-    cleaning.py
-    modeling.py
-    profit.py
-
-tests/
-    test_cleaning.py
-    test_modeling.py
-    test_profit.py
-
-prepare_application_metrics.py
-plot_application_anomalies.py
-clean_vendor_dataset.py
-compare_fraud_models.py
-evaluate_vendor_profit.py
-requirements.txt
-=======
-fraud_detection/                 Reusable cleaning, modeling, and profit logic
-tests/                           Synthetic-data unit tests
-prepare_application_metrics.py  Build application and product daily metrics
-plot_application_anomalies.py   Plot a user-specified anomaly window
+    applications.py             Application cleaning and daily aggregation
+    common.py                   Shared normalization and validation helpers
+    modeling.py                 Leakage-safe preprocessing and model comparison
+    profit.py                   Decision thresholds and expected-profit logic
+    vendor.py                   Vendor-data cleaning and feature definitions
+tests/                          Synthetic-data unit tests
+docs/
+    figures/                    Curated README visualizations
+    results/                    Compact publishable result tables
+prepare_application_metrics.py  Generate daily application metrics
+plot_application_anomalies.py   Plot a specified anomaly window
 clean_vendor_dataset.py         Normalize the vendor-enriched dataset
-compare_fraud_models.py         Cross-validate and compare three model families
-evaluate_vendor_profit.py       Compare with/without-vendor decision economics
-generate_project_figures.py     Create curated charts for this README
->>>>>>> Stashed changes
+compare_fraud_models.py         Compare the three model families
+evaluate_vendor_profit.py       Evaluate with/without-vendor scenarios
+generate_project_figures.py     Rebuild README figures and result tables
 ```
-
-### Main scripts
-
-| Script                           | Purpose                                                  |
-| -------------------------------- | -------------------------------------------------------- |
-| `prepare_application_metrics.py` | Creates daily application, product, and fraud metrics    |
-| `plot_application_anomalies.py`  | Visualizes activity during a selected anomaly window     |
-| `clean_vendor_dataset.py`        | Cleans and standardizes the vendor-enriched dataset      |
-| `compare_fraud_models.py`        | Trains and compares the classification models            |
-| `evaluate_vendor_profit.py`      | Compares decision economics with and without vendor data |
 
 ## Data
 
-<<<<<<< Updated upstream
-The original case-study workbook is not included in this repository because it contains application-level information that should not be published publicly.
+The original `FraudCaseStudy.xlsx` workbook is intentionally excluded from Git because application-level case-study data should not be published without explicit permission.
 
-To reproduce the analysis, place the following file in the repository root:
-
-```text
-FraudCaseStudy.xlsx
-```
-
-By default, the scripts expect two worksheets:
-
-```text
-p1-dataset
-p2-dataset
-```
-
-The worksheet names can also be changed through the command-line arguments.
-=======
-Place `FraudCaseStudy.xlsx` in the repository root, or pass its location with `--input`. The workbook is intentionally ignored by Git because case-study or customer data should not be published by default. The scripts expect sheets named `p1-dataset` and `p2-dataset`; both names can be overridden from the command line.
->>>>>>> Stashed changes
+To reproduce the analysis, place the workbook in the repository root or pass its local path with `--input`. The expected worksheet names are `p1-dataset` and `p2-dataset`.
 
 ## Setup
 
-Clone the repository and create a virtual environment:
-
 ```bash
-git clone https://github.com/KianaShi/fraud-risk-analysis.git
-cd fraud-risk-analysis
-
 python -m venv .venv
-```
-
-Activate the environment:
-
-```bash
 # Windows
 .venv\Scripts\activate
-
-# macOS or Linux
+# macOS/Linux
 source .venv/bin/activate
-```
 
-Install the dependencies:
-
-```bash
 python -m pip install -r requirements.txt
 ```
 
-## Running the Analysis
-
-### Generate application-level metrics
+## Run the workflows
 
 ```bash
 python prepare_application_metrics.py
-<<<<<<< Updated upstream
-=======
-python plot_application_anomalies.py --anomaly-start 2019-06-25 --anomaly-end 2019-07-04
-
-python clean_vendor_dataset.py
-python compare_fraud_models.py
-python evaluate_vendor_profit.py --approve-threshold 0.2 --decline-threshold 0.8
-python generate_project_figures.py
->>>>>>> Stashed changes
-```
-
-### Plot an anomaly period
-
-```bash
 python plot_application_anomalies.py \
   --anomaly-start 2019-06-25 \
   --anomaly-end 2019-07-04
-```
 
-### Clean the vendor-enriched dataset
-
-```bash
 python clean_vendor_dataset.py
-```
-
-<<<<<<< Updated upstream
-### Compare fraud models
-
-```bash
 python compare_fraud_models.py
-```
-
-### Evaluate the vendor-data strategy
-
-```bash
 python evaluate_vendor_profit.py \
   --approve-threshold 0.2 \
   --decline-threshold 0.8
+
+python generate_project_figures.py
 ```
 
-Generated tables and figures are saved under:
+Intermediate files are written to the ignored `outputs/` directory. Curated figures and compact result tables are written to `docs/` and tracked by Git.
 
-```text
-outputs/
-```
+## Evaluation design
 
-## Testing
+- Missing-value imputation, scaling, and one-hot encoding are fitted inside scikit-learn pipelines.
+- Candidate models are ranked by five-fold cross-validated PR-AUC on the training partition.
+- The independent holdout set is used only for the selected model's final evaluation.
+- Metrics include ROC-AUC, PR-AUC, accuracy, balanced accuracy, precision, and recall.
+- The no-vendor scenario excludes all nine fields identified as FraudKiller data in the workbook definition.
 
-Run the unit tests with:
-=======
 ## Results
 
-### Application volume and approved fraud risk
+### Application trends
 
 ![Daily payment applications](docs/figures/daily_applications.png)
 
 ![Fraud rate among approved applications](docs/figures/approved_fraud_rate.png)
 
-### Model and vendor evaluation
+The highlighted period is a specified case-study window, not an automatically detected anomaly or a causal estimate.
+
+### Cross-validated model comparison
+
+| Model | CV ROC-AUC | CV PR-AUC | CV balanced accuracy | Selected |
+|---|---:|---:|---:|:---:|
+| Decision Tree | 0.9340 | **0.9345** | 0.8839 | Yes |
+| Random Forest | 0.9159 | 0.9180 | 0.8652 | No |
+| Logistic Regression | 0.8732 | 0.8661 | 0.8012 | No |
 
 ![Cross-validated model comparison](docs/figures/model_comparison.png)
 
+The exact machine-readable results are available in [`docs/results/model_comparison.csv`](docs/results/model_comparison.csv).
+
+### Selected-model holdout performance
+
+The Decision Tree was selected using training-set CV PR-AUC and evaluated once on the fixed holdout set.
+
+| ROC-AUC | PR-AUC | Accuracy | Balanced accuracy | Precision | Recall |
+|---:|---:|---:|---:|---:|---:|
+| 0.9453 | 0.9446 | 0.9009 | 0.8990 | 0.9456 | 0.8433 |
+
+### Vendor evaluation
+
 ![Vendor predictive and economic evaluation](docs/figures/vendor_evaluation.png)
 
-On the fixed holdout set, the selected decision tree achieved a ROC-AUC of **0.945**, PR-AUC of **0.945**, and accuracy of **90.1%**. Under the case-study assumptions and thresholds, adding FraudKiller data increased expected test-set profit from **$62,744** to **$92,963**. These profit figures are scenario outputs, not production forecasts.
+| Scenario | Holdout ROC-AUC | Holdout PR-AUC | Expected profit |
+|---|---:|---:|---:|
+| Without FraudKiller data | 0.8876 | 0.8526 | $62,744.00 |
+| With FraudKiller data | 0.9453 | 0.9446 | $92,962.50 |
 
-## Test
->>>>>>> Stashed changes
+Profit values depend on the case-study thresholds and assumptions. They are scenario outputs, not production forecasts.
+
+## Testing
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The tests use synthetic data and cover the main cleaning, modeling, and profit-analysis logic.
-
-GitHub Actions runs the same test command on each push and pull request.
-
-## Tools
-
-* Python
-* pandas
-* NumPy
-* scikit-learn
-* Matplotlib
-* unittest
-
-## What I Learned
-
-The most important lesson from this project was that fraud modeling is not only a classification problem.
-
-A useful fraud system also requires careful handling of data leakage, appropriate evaluation metrics, threshold selection, operational review policies, and financial tradeoffs.
-
-A model with slightly stronger predictive metrics may not be the best option if it creates too many false declines, requires excessive manual review, or depends on expensive external data. Evaluating the full decision process provided a much more realistic view of model value than comparing accuracy scores alone.
+The tests use synthetic data and cover cleaning, preprocessing, model definitions, decision thresholds, and profit calculations. GitHub Actions runs the same command for each push and pull request.

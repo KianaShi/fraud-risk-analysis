@@ -18,9 +18,10 @@ def _save(figure: plt.Figure, path: Path) -> None:
     plt.close(figure)
 
 
-def generate_figures(outputs_dir: Path, figures_dir: Path) -> None:
-    """Create time-series, model-comparison, and vendor-value charts."""
+def generate_figures(outputs_dir: Path, figures_dir: Path, results_dir: Path) -> None:
+    """Create curated charts and compact, publishable result tables."""
     figures_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
     plt.style.use("seaborn-v0_8-whitegrid")
 
     daily = pd.read_csv(outputs_dir / "p1_daily_metrics.csv", parse_dates=["app_day"])
@@ -42,6 +43,7 @@ def generate_figures(outputs_dir: Path, figures_dir: Path) -> None:
     _save(figure, figures_dir / "approved_fraud_rate.png")
 
     models = pd.read_csv(outputs_dir / "model_comparison.csv").sort_values("cv_pr_auc")
+    models.sort_values("cv_pr_auc", ascending=False).to_csv(results_dir / "model_comparison.csv", index=False)
     labels = models["model"].str.replace("_", " ").str.title()
     positions = range(len(models))
     figure, axis = plt.subplots(figsize=(9, 4.8))
@@ -66,7 +68,7 @@ def generate_figures(outputs_dir: Path, figures_dir: Path) -> None:
     figure.suptitle("Incremental Value of FraudKiller Data", fontsize=14, fontweight="bold")
     _save(figure, figures_dir / "vendor_evaluation.png")
 
-    print(f"Saved 4 curated figures to {figures_dir}")
+    print(f"Saved 4 curated figures to {figures_dir} and model results to {results_dir}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,9 +77,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outputs-dir", type=Path, default=root / "outputs")
     parser.add_argument("--figures-dir", type=Path, default=root / "docs" / "figures")
+    parser.add_argument("--results-dir", type=Path, default=root / "docs" / "results")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    generate_figures(args.outputs_dir, args.figures_dir)
+    generate_figures(args.outputs_dir, args.figures_dir, args.results_dir)
