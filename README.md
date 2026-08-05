@@ -119,6 +119,7 @@ This part of the project was important because a feature can improve predictive 
 ## Repository Structure
 
 ```text
+<<<<<<< Updated upstream
 fraud_detection/
     cleaning.py
     modeling.py
@@ -135,6 +136,16 @@ clean_vendor_dataset.py
 compare_fraud_models.py
 evaluate_vendor_profit.py
 requirements.txt
+=======
+fraud_detection/                 Reusable cleaning, modeling, and profit logic
+tests/                           Synthetic-data unit tests
+prepare_application_metrics.py  Build application and product daily metrics
+plot_application_anomalies.py   Plot a user-specified anomaly window
+clean_vendor_dataset.py         Normalize the vendor-enriched dataset
+compare_fraud_models.py         Cross-validate and compare three model families
+evaluate_vendor_profit.py       Compare with/without-vendor decision economics
+generate_project_figures.py     Create curated charts for this README
+>>>>>>> Stashed changes
 ```
 
 ### Main scripts
@@ -149,6 +160,7 @@ requirements.txt
 
 ## Data
 
+<<<<<<< Updated upstream
 The original case-study workbook is not included in this repository because it contains application-level information that should not be published publicly.
 
 To reproduce the analysis, place the following file in the repository root:
@@ -165,6 +177,9 @@ p2-dataset
 ```
 
 The worksheet names can also be changed through the command-line arguments.
+=======
+Place `FraudCaseStudy.xlsx` in the repository root, or pass its location with `--input`. The workbook is intentionally ignored by Git because case-study or customer data should not be published by default. The scripts expect sheets named `p1-dataset` and `p2-dataset`; both names can be overridden from the command line.
+>>>>>>> Stashed changes
 
 ## Setup
 
@@ -199,6 +214,15 @@ python -m pip install -r requirements.txt
 
 ```bash
 python prepare_application_metrics.py
+<<<<<<< Updated upstream
+=======
+python plot_application_anomalies.py --anomaly-start 2019-06-25 --anomaly-end 2019-07-04
+
+python clean_vendor_dataset.py
+python compare_fraud_models.py
+python evaluate_vendor_profit.py --approve-threshold 0.2 --decline-threshold 0.8
+python generate_project_figures.py
+>>>>>>> Stashed changes
 ```
 
 ### Plot an anomaly period
@@ -215,6 +239,7 @@ python plot_application_anomalies.py \
 python clean_vendor_dataset.py
 ```
 
+<<<<<<< Updated upstream
 ### Compare fraud models
 
 ```bash
@@ -238,6 +263,25 @@ outputs/
 ## Testing
 
 Run the unit tests with:
+=======
+## Results
+
+### Application volume and approved fraud risk
+
+![Daily payment applications](docs/figures/daily_applications.png)
+
+![Fraud rate among approved applications](docs/figures/approved_fraud_rate.png)
+
+### Model and vendor evaluation
+
+![Cross-validated model comparison](docs/figures/model_comparison.png)
+
+![Vendor predictive and economic evaluation](docs/figures/vendor_evaluation.png)
+
+On the fixed holdout set, the selected decision tree achieved a ROC-AUC of **0.945**, PR-AUC of **0.945**, and accuracy of **90.1%**. Under the case-study assumptions and thresholds, adding FraudKiller data increased expected test-set profit from **$62,744** to **$92,963**. These profit figures are scenario outputs, not production forecasts.
+
+## Test
+>>>>>>> Stashed changes
 
 ```bash
 python -m unittest discover -s tests -v
