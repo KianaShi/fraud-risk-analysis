@@ -42,17 +42,18 @@ def generate_figures(outputs_dir: Path, figures_dir: Path, results_dir: Path) ->
     figure.autofmt_xdate()
     _save(figure, figures_dir / "approved_fraud_rate.png")
 
-    models = pd.read_csv(outputs_dir / "model_comparison.csv").sort_values("cv_pr_auc")
-    models.sort_values("cv_pr_auc", ascending=False).to_csv(results_dir / "model_comparison.csv", index=False)
+    models = pd.read_csv(outputs_dir / "model_comparison.csv").sort_values("validation_pr_auc")
+    models.sort_values("validation_pr_auc", ascending=False).to_csv(results_dir / "model_comparison.csv", index=False)
+    pd.read_csv(outputs_dir / "split_audit.csv").to_csv(results_dir / "split_audit.csv", index=False)
     labels = models["model"].str.replace("_", " ").str.title()
     positions = range(len(models))
     figure, axis = plt.subplots(figsize=(9, 4.8))
     width = 0.36
-    axis.bar([position - width / 2 for position in positions], models["cv_roc_auc"], width, label="CV ROC-AUC", color=COLORS["blue"])
-    axis.bar([position + width / 2 for position in positions], models["cv_pr_auc"], width, label="CV PR-AUC", color=COLORS["teal"])
+    axis.bar([position - width / 2 for position in positions], models["validation_pr_auc"], width, label="Validation PR-AUC", color=COLORS["blue"])
+    axis.bar([position + width / 2 for position in positions], models["test_pr_auc"], width, label="Test PR-AUC", color=COLORS["teal"])
     axis.set_xticks(list(positions), labels)
     axis.set_ylim(0.75, 1.0)
-    axis.set(title="Cross-Validated Model Performance", ylabel="Score")
+    axis.set(title="Stratified Task 2 Model Performance", ylabel="PR-AUC")
     axis.legend(frameon=False)
     _save(figure, figures_dir / "model_comparison.png")
 

@@ -1,0 +1,4 @@
+split,n,fraud,non_fraud,fraud_rate
+train,1942,939,1003,0.4835
+validation,416,201,215,0.4832
+test,417,202,215,0.4844
