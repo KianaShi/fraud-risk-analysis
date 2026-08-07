@@ -1,0 +1,6 @@
+role,features
+target,is_fraud
+identifiers,
+allowed_predictive,ea_score|identity_rank|reputation_level|volume_score|result_number|email_days|is_valid|is_connected|personal_device|receiving_mail|area_code|device_browser_type|ip_address_loc_country|type
+vendor,is_valid|is_connected|personal_device|reputation_level|receiving_mail|type|volume_score|result_number|email_days
+excluded_ambiguous,open_date|open_year|open_month|open_day_of_week

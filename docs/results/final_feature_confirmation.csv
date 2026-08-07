@@ -1,0 +1,5 @@
+model,feature_configuration,n_features,feature_names,validation_pr_auc,test_pr_auc,test_roc_auc,test_precision,test_recall,test_f1
+xgboost,original_baseline,14,ea_score|identity_rank|reputation_level|volume_score|result_number|email_days|is_valid|is_connected|personal_device|receiving_mail|area_code|device_browser_type|ip_address_loc_country|type,0.9630263922351264,0.9459376379344329,0.9365876122495971,0.9184782608695652,0.8366336633663366,0.8756476683937824
+catboost,original_baseline,14,ea_score|identity_rank|reputation_level|volume_score|result_number|email_days|is_valid|is_connected|personal_device|receiving_mail|area_code|device_browser_type|ip_address_loc_country|type,0.9576263105183009,0.9490241915365132,0.940548008289201,0.9055555555555556,0.806930693069307,0.8534031413612565
+xgboost,top_5,5,ea_score|identity_rank|email_days|device_browser_type|type,0.9635760348160046,0.9460870804292408,0.9362422288740501,0.9281767955801105,0.8316831683168316,0.8772845953002611
+catboost,top_5,5,ea_score|identity_rank|email_days|device_browser_type|type,0.9641350515033947,0.945821836801214,0.9368178678332949,0.9217877094972067,0.8168316831683168,0.8661417322834646

@@ -57,6 +57,18 @@ def generate_figures(outputs_dir: Path, figures_dir: Path, results_dir: Path) ->
     axis.legend(frameon=False)
     _save(figure, figures_dir / "model_comparison.png")
 
+    shap_path = results_dir / "shap_feature_importance.csv"
+    if shap_path.exists():
+        shap_values = pd.read_csv(shap_path)
+        shap_values = (
+            shap_values.groupby("feature", as_index=False)["mean_abs_shap"]
+            .mean().nlargest(10, "mean_abs_shap").sort_values("mean_abs_shap")
+        )
+        figure, axis = plt.subplots(figsize=(8, 5.5))
+        axis.barh(shap_values["feature"], shap_values["mean_abs_shap"], color=COLORS["teal"])
+        axis.set(title="Global SHAP Feature Importance", xlabel="Mean absolute SHAP value", ylabel="Original feature")
+        _save(figure, figures_dir / "shap_feature_importance.png")
+
     vendor = pd.read_csv(outputs_dir / "profit_scenario_comparison.csv")
     vendor_labels = vendor["scenario"].map({"tree_without_vendor": "Without vendor", "tree_with_vendor": "With vendor"})
     figure, axes = plt.subplots(1, 2, figsize=(11, 4.8))
@@ -69,7 +81,7 @@ def generate_figures(outputs_dir: Path, figures_dir: Path, results_dir: Path) ->
     figure.suptitle("Incremental Value of FraudKiller Data", fontsize=14, fontweight="bold")
     _save(figure, figures_dir / "vendor_evaluation.png")
 
-    print(f"Saved 4 curated figures to {figures_dir} and model results to {results_dir}")
+    print(f"Saved curated figures to {figures_dir} and model results to {results_dir}")
 
 
 def parse_args() -> argparse.Namespace:

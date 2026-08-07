@@ -20,10 +20,15 @@ COLUMN_ALIASES = {
 NUMERIC_COLUMNS = ("ea_score", "identity_rank", "reputation_level", "volume_score", "result_number", "email_days")
 BOOLEAN_COLUMNS = ("is_valid", "is_connected", "personal_device", "receiving_mail")
 CATEGORICAL_COLUMNS = ("area_code", "device_browser_type", "ip_address_loc_country", "type")
+TARGET_COLUMN = "is_fraud"
+IDENTIFIER_COLUMNS: tuple[str, ...] = ()
+EXCLUDED_AMBIGUOUS_FEATURES = ("open_date", "open_year", "open_month", "open_day_of_week")
 VENDOR_FEATURES = (
     "is_valid", "is_connected", "personal_device", "reputation_level",
     "receiving_mail", "type", "volume_score", "result_number", "email_days",
 )
+ALLOWED_PREDICTIVE_FEATURES = (*NUMERIC_COLUMNS, *BOOLEAN_COLUMNS, *CATEGORICAL_COLUMNS)
+IN_HOUSE_FEATURES = tuple(column for column in ALLOWED_PREDICTIVE_FEATURES if column not in VENDOR_FEATURES)
 
 
 def clean_vendor_data(raw: pd.DataFrame) -> pd.DataFrame:
