@@ -151,7 +151,7 @@ All feature statistics, missingness rules, importance calculations, ablations, a
 
 ### Availability and leakage audit
 
-The primary feature matrix contains 14 allowed fields: five in-house and nine FraudKiller fields. `is_fraud` is the target and never enters `X`. Raw `open_date` plus `open_year`, `open_month`, and `open_day_of_week` remain excluded. `result_number` is retained but flagged for decision-time/business-definition review because its name is ID-like; it is not automatically removed.
+The primary feature matrix contains 14 allowed fields: five in-house and nine FraudKiller fields. `is_fraud` is the target and never enters `X`. Raw `open_date` plus `open_year`, `open_month`, and `open_day_of_week` remain excluded. `result_number` is an allowed numeric vendor feature: the FraudKiller data dictionary defines it as the number of results returned for the record. It is a count, not an identifier, so it is not flagged as ID-like. The data dictionary does not establish why the count may be associated with fraud, and no causal interpretation is claimed.
 
 The complete machine-readable outputs include:
 

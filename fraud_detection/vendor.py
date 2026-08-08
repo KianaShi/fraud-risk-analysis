@@ -23,6 +23,14 @@ CATEGORICAL_COLUMNS = ("area_code", "device_browser_type", "ip_address_loc_count
 TARGET_COLUMN = "is_fraud"
 IDENTIFIER_COLUMNS: tuple[str, ...] = ()
 EXCLUDED_AMBIGUOUS_FEATURES = ("open_date", "open_year", "open_month", "open_day_of_week")
+FEATURE_METADATA = {
+    "result_number": {
+        "semantic_type": "numeric count",
+        "source": "FraudKiller vendor",
+        "meaning": "Number of results returned for the record.",
+        "status": "allowed predictive feature",
+    },
+}
 VENDOR_FEATURES = (
     "is_valid", "is_connected", "personal_device", "reputation_level",
     "receiving_mail", "type", "volume_score", "result_number", "email_days",

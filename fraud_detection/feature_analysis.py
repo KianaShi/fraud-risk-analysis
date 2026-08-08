@@ -72,6 +72,11 @@ def build_feature_audit(X_train: pd.DataFrame, y_train: pd.Series, groups: Featu
         observed = values.dropna()
         counts = values.astype("object").where(values.notna(), "__MISSING__").value_counts(dropna=False)
         feature_type = "numeric" if feature in numeric else "boolean" if feature in boolean else "categorical"
+        suspicious_id_like = bool(
+            feature in IDENTIFIER_COLUMNS
+            or feature.lower().endswith("_id")
+            or (len(observed) > 0 and observed.nunique() / len(observed) >= 0.98)
+        )
         row: dict[str, object] = {
             "feature": feature,
             "feature_type": feature_type,
@@ -83,13 +88,9 @@ def build_feature_audit(X_train: pd.DataFrame, y_train: pd.Series, groups: Featu
             "cardinality": int(values.nunique(dropna=True)) if feature_type != "numeric" else np.nan,
             "constant": bool(values.nunique(dropna=False) <= 1),
             "near_constant": bool(not counts.empty and counts.iloc[0] / len(values) >= 0.99),
-            "suspicious_id_like": bool(
-                feature in IDENTIFIER_COLUMNS
-                or feature.lower().endswith(("_id", "_number"))
-                or (len(observed) > 0 and observed.nunique() / len(observed) >= 0.98)
-            ),
-            "review_note": "Meaning/decision-time availability not documented; review before production."
-            if feature.lower().endswith(("_id", "_number"))
+            "suspicious_id_like": suspicious_id_like,
+            "review_note": "Potential identifier or near-unique field; review before production."
+            if suspicious_id_like
             else "",
             "value_counts_json": "",
             "fraud_rate_by_value_json": "",

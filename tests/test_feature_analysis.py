@@ -16,6 +16,7 @@ from fraud_detection.feature_analysis import (
     select_missing_indicators,
 )
 from fraud_detection.modeling import FeatureGroups, candidate_models, stratified_split
+from fraud_detection.vendor import FEATURE_METADATA
 
 
 class FeatureAnalysisTests(unittest.TestCase):
@@ -44,6 +45,26 @@ class FeatureAnalysisTests(unittest.TestCase):
         self.assertTrue(required.issubset(audit.columns))
         self.assertEqual(set(audit["feature"]), set(self.groups.all))
         self.assertNotIn("is_fraud", audit["feature"].tolist())
+
+    def test_result_number_is_a_documented_count_not_an_id(self) -> None:
+        groups = FeatureGroups(("result_number",), (), ())
+        features = pd.DataFrame({"result_number": [0, 1, 5, 1, 0]})
+        target = pd.Series([0, 0, 1, 0, 1])
+
+        audit = build_feature_audit(features, target, groups).iloc[0]
+
+        self.assertEqual(FEATURE_METADATA["result_number"]["semantic_type"], "numeric count")
+        self.assertEqual(FEATURE_METADATA["result_number"]["source"], "FraudKiller vendor")
+        self.assertEqual(
+            FEATURE_METADATA["result_number"]["meaning"],
+            "Number of results returned for the record.",
+        )
+        self.assertEqual(FEATURE_METADATA["result_number"]["status"], "allowed predictive feature")
+        self.assertEqual(audit["feature_type"], "numeric")
+        self.assertEqual(audit["source"], "vendor")
+        self.assertTrue(audit["allowed_primary_benchmark"])
+        self.assertFalse(audit["suspicious_id_like"])
+        self.assertEqual(audit["review_note"], "")
 
     def test_missingness_analysis_and_indicators(self) -> None:
         train = self.X.loc[self.partitions.train]
