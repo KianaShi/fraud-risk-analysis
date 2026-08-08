@@ -1,0 +1,91 @@
+{
+  "design": {
+    "cv_folds": 5,
+    "cv_seed": 42,
+    "features": [
+      "ea_score",
+      "identity_rank",
+      "reputation_level",
+      "volume_score",
+      "result_number",
+      "email_days",
+      "is_valid",
+      "is_connected",
+      "personal_device",
+      "receiving_mail",
+      "area_code",
+      "device_browser_type",
+      "ip_address_loc_country",
+      "type"
+    ],
+    "optimization_seed": 42,
+    "primary_objective": "mean_cv_pr_auc",
+    "test_access": "after both configurations were frozen on Validation"
+  },
+  "models": {
+    "catboost": {
+      "best_optuna_parameters": {
+        "bagging_temperature": 0.4908515732450751,
+        "depth": 5,
+        "iterations": 950,
+        "l2_leaf_reg": 6.185788586514097,
+        "learning_rate": 0.07598838485713386,
+        "random_strength": 2.669371508008616
+      },
+      "cv_folds": 5,
+      "cv_seed": 42,
+      "improvement_assessment": "marginal",
+      "model": "catboost",
+      "n_trials": 40,
+      "optimization_seed": 42,
+      "selected_configuration": "tuned",
+      "selected_parameters": {
+        "bagging_temperature": 0.4908515732450751,
+        "depth": 5,
+        "iterations": 950,
+        "l2_leaf_reg": 6.185788586514097,
+        "learning_rate": 0.07598838485713386,
+        "random_strength": 2.669371508008616
+      },
+      "train_cv_pr_auc": 0.9510378592018908,
+      "train_cv_pr_auc_std": 0.008613915055139433,
+      "validation_pr_auc": 0.9622767053327657,
+      "validation_pr_auc_delta": 0.00465039481446472
+    },
+    "xgboost": {
+      "best_optuna_parameters": {
+        "colsample_bytree": 0.7371303839678691,
+        "gamma": 2.7534578556254363,
+        "learning_rate": 0.04254033663089104,
+        "max_depth": 5,
+        "min_child_weight": 1,
+        "n_estimators": 650,
+        "reg_alpha": 0.12222917194266188,
+        "reg_lambda": 0.021551594821793474,
+        "subsample": 0.6011006228450518
+      },
+      "cv_folds": 5,
+      "cv_seed": 42,
+      "improvement_assessment": "marginal",
+      "model": "xgboost",
+      "n_trials": 40,
+      "optimization_seed": 42,
+      "selected_configuration": "tuned",
+      "selected_parameters": {
+        "colsample_bytree": 0.7371303839678691,
+        "gamma": 2.7534578556254363,
+        "learning_rate": 0.04254033663089104,
+        "max_depth": 5,
+        "min_child_weight": 1,
+        "n_estimators": 650,
+        "reg_alpha": 0.12222917194266188,
+        "reg_lambda": 0.021551594821793474,
+        "subsample": 0.6011006228450518
+      },
+      "train_cv_pr_auc": 0.9532460675688721,
+      "train_cv_pr_auc_std": 0.010221409875142974,
+      "validation_pr_auc": 0.9670091866820177,
+      "validation_pr_auc_delta": 0.0039827944468913135
+    }
+  }
+}

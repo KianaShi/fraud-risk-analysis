@@ -27,6 +27,7 @@ fraud_detection/
     common.py                   Shared normalization and validation helpers
     modeling.py                 Task 2 split, model paths, and evaluation
     feature_analysis.py         Train/Validation feature investigation
+    tuning.py                   Train-only Optuna optimization and final confirmation
     profit.py                   Decision thresholds and expected-profit logic
     vendor.py                   Vendor-data cleaning and feature definitions
 tests/                          Synthetic-data unit tests
@@ -39,6 +40,7 @@ clean_vendor_dataset.py         Normalize the vendor-enriched Task 2 data
 compare_fraud_models.py         Run the stratified Task 2 benchmark
 evaluate_vendor_profit.py       Evaluate with/without-vendor scenarios
 investigate_features.py         Run audit, importance, and ablation experiments
+tune_models.py                  Tune the frozen 14-feature classical benchmarks
 generate_project_figures.py     Rebuild README figures and result tables
 ```
 
@@ -73,6 +75,7 @@ python plot_application_anomalies.py \
 python clean_vendor_dataset.py
 python compare_fraud_models.py
 python investigate_features.py --n-repeats 5
+python tune_models.py --trials 40
 python evaluate_vendor_profit.py \
   --approve-threshold 0.2 \
   --decline-threshold 0.8
@@ -217,6 +220,49 @@ ea_score, identity_rank, email_days, device_browser_type, type
 | CatBoost | Final 5 | **0.9641** | 0.9458 | 0.9368 |
 
 The final five-feature configuration was chosen before these Test results were calculated. It materially reduces complexity while retaining similar performance; Test numbers are confirmation, not selection criteria.
+
+## Hyperparameter Optimization
+
+The classical tuning phase uses Optuna's seeded TPE Bayesian optimizer for XGBoost and CatBoost. It always uses the full 14-feature primary benchmark; the five-feature compact model above remains a separate, unchanged ablation.
+
+Each Optuna trial is evaluated only within the existing Train partition using five-fold `StratifiedKFold` with `shuffle=True` and `random_state=42`. Mean cross-validation PR-AUC is maximized and its fold standard deviation is recorded. The fixed Validation partition is not reused by individual trials: it is accessed once after each search to compare the repository default with the best tuned candidate and freeze one configuration per model. Only after both decisions are frozen are Train and Validation combined for a single final Test evaluation.
+
+The default run uses 40 trials per model and a seeded `TPESampler(seed=42)`:
+
+```bash
+python tune_models.py --trials 40
+# Optional independent budgets
+python tune_models.py --xgb-trials 40 --catboost-trials 40
+```
+
+The run writes:
+
+- [`hyperparameter_trials.csv`](docs/results/hyperparameter_trials.csv), with candidate parameters and Train-CV PR-AUC;
+- [`tuned_model_comparison.csv`](docs/results/tuned_model_comparison.csv), with default/tuned CV and Validation metrics;
+- [`best_hyperparameters.json`](docs/results/best_hyperparameters.json), with the frozen choices, seeds, and trial counts;
+- [`final_tuned_test_comparison.csv`](docs/results/final_tuned_test_comparison.csv), containing the one-time Test confirmation.
+
+Validation PR-AUC changes below 0.001 are described as negligible, changes below 0.005 as marginal, and larger gains as meaningful. Negative changes retain the default configuration.
+
+### Optimization results
+
+The completed run used 40 trials per model. Both searches completed all 40 trials, and both tuned candidates produced marginal Validation PR-AUC improvements. The tuned configuration was therefore frozen for each model before Test was accessed.
+
+| Model | Configuration | Train-CV PR-AUC | Validation PR-AUC | Validation ROC-AUC | Validation delta | Frozen |
+|---|---|---:|---:|---:|---:|---|
+| XGBoost | Default | 0.9501 | 0.9630 | 0.9557 | N/A | No |
+| XGBoost | Tuned | **0.9532** | **0.9670** | **0.9608** | +0.0040 (marginal) | **Yes** |
+| CatBoost | Default | 0.9457 | 0.9576 | 0.9501 | N/A | No |
+| CatBoost | Tuned | **0.9510** | **0.9623** | **0.9532** | +0.0047 (marginal) | **Yes** |
+
+After freezing both choices, each tuned model was refitted once on Train+Validation and evaluated on the untouched Test partition:
+
+| Model | Frozen configuration | Validation PR-AUC | Test PR-AUC | Test ROC-AUC | Test precision | Test recall | Test F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| XGBoost | Tuned | 0.9670 | 0.9483 | 0.9382 | 0.9176 | 0.8267 | 0.8698 |
+| CatBoost | Tuned | 0.9623 | **0.9524** | **0.9457** | **0.9185** | **0.8366** | **0.8756** |
+
+XGBoost optimization took approximately 62 seconds; its final Train+Validation fit took 0.36 seconds and Test inference took 0.015 seconds. CatBoost optimization took approximately 6,381 seconds (106.4 minutes); its final fit took 42.28 seconds and Test inference took 0.010 seconds. These are approximate single-run wall-clock measurements from the local environment.
 
 ### FraudKiller vendor evaluation
 
