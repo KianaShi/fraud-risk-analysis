@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "model": "CatBoost",
+  "model_version": "Fraud v1.0",
+  "model_identifier": "catboost_fraud_v1",
+  "role": "production-oriented candidate",
+  "research_winner": "TabICLv2",
+  "selection_statement": "CatBoost was not selected because it had the highest benchmark score. It is retained as an operationally simpler candidate for further production validation.",
+  "configuration": {
+    "source": "docs/results/best_hyperparameters.json",
+    "selected_configuration": "tuned",
+    "selected_parameters": {
+      "bagging_temperature": 0.4908515732450751,
+      "depth": 5,
+      "iterations": 950,
+      "l2_leaf_reg": 6.185788586514097,
+      "learning_rate": 0.07598838485713386,
+      "random_strength": 2.669371508008616
+    },
+    "random_seed": 42,
+    "primary_objective": "mean_cv_pr_auc"
+  },
+  "features": {
+    "count": 14,
+    "names": [
+      "ea_score",
+      "identity_rank",
+      "reputation_level",
+      "volume_score",
+      "result_number",
+      "email_days",
+      "is_valid",
+      "is_connected",
+      "personal_device",
+      "receiving_mail",
+      "area_code",
+      "device_browser_type",
+      "ip_address_loc_country",
+      "type"
+    ],
+    "numeric": [
+      "ea_score",
+      "identity_rank",
+      "reputation_level",
+      "volume_score",
+      "result_number",
+      "email_days"
+    ],
+    "boolean": [
+      "is_valid",
+      "is_connected",
+      "personal_device",
+      "receiving_mail"
+    ],
+    "categorical": [
+      "area_code",
+      "device_browser_type",
+      "ip_address_loc_country",
+      "type"
+    ]
+  },
+  "runtime": {
+    "catboost_version": "1.2.10",
+    "native_model_format": "cbm"
+  },
+  "training": {
+    "scope": "frozen Train+Validation development partition; Test excluded",
+    "artifact_status": "not built in repository; reproducible development-only build required",
+    "production_artifact_built": false,
+    "deployment_ready": false,
+    "model_path": "artifacts/catboost_fraud_model.cbm",
+    "preprocessor_path": "artifacts/catboost_preprocessor.json",
+    "build_input_attestation": "The build flag records the user's declaration that the supplied CSV excludes Test rows; the code cannot verify split membership from an arbitrary CSV."
+  },
+  "threshold_policy": {
+    "status": "unresolved; must be supplied separately from model scoring",
+    "benchmark_threshold": 0.5,
+    "benchmark_threshold_is_production_optimal": false,
+    "model_specific_threshold_optimization_performed": false
+  },
+  "calibration": {
+    "status": "not performed",
+    "production_calibration_available": false
+  },
+  "frozen_benchmark_metrics": {
+    "Tuned XGBoost": {
+      "validation_pr_auc": 0.9670091866820176,
+      "test_pr_auc": 0.9482705843924212,
+      "test_roc_auc": 0.9381533502187428,
+      "test_f1_at_0_5": 0.8697916666666666,
+      "validation_minus_test_pr_auc": 0.01873860228959645
+    },
+    "Tuned CatBoost": {
+      "validation_pr_auc": 0.9622767053327655,
+      "test_pr_auc": 0.9524062366311112,
+      "test_roc_auc": 0.945705733364034,
+      "test_f1_at_0_5": 0.8756476683937824,
+      "validation_minus_test_pr_auc": 0.009870468701654311
+    },
+    "TabPFN-3": {
+      "validation_pr_auc": 0.9695110966739664,
+      "test_pr_auc": 0.9554499967891266,
+      "test_roc_auc": 0.9466037301404558,
+      "test_f1_at_0_5": 0.90625,
+      "validation_minus_test_pr_auc": 0.014061099884839834
+    },
+    "TabICLv2": {
+      "validation_pr_auc": 0.9719452255967672,
+      "test_pr_auc": 0.959293090356883,
+      "test_roc_auc": 0.9509210223347916,
+      "test_f1_at_0_5": 0.9114583333333334,
+      "validation_minus_test_pr_auc": 0.012652135239884177
+    }
+  },
+  "evaluation_caveats": {
+    "threshold": "Precision, recall, and F1 use a shared 0.5 threshold. No model-specific threshold optimization or calibration was performed; these are not production-optimal operating points.",
+    "production_prevalence": "Task 2 is an intentionally selected approximately balanced sample; its fraud rate is not expected production prevalence.",
+    "production_decision": "Final model and threshold selection requires real prevalence, business costs, review capacity, calibration, and infrastructure evidence.",
+    "single_benchmark": "TabICLv2 led discrimination on this fixed benchmark; this does not establish universal model-family superiority.",
+    "validation_reuse": "The Validation partition was reused across development stages and is not repeatedly independent confirmation.",
+    "test_discipline": "Test was used for the frozen Phase 3/4 confirmations and was not reused for the deferred TabPrep experiment."
+  },
+  "production_inputs_unavailable": [
+    "natural fraud prevalence",
+    "false-negative fraud cost",
+    "false-positive rejection cost",
+    "manual-review cost and capacity",
+    "merchant lifetime or revenue assumptions",
+    "production probability calibration",
+    "deployment latency and infrastructure requirements"
+  ]
+}

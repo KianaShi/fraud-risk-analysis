@@ -1,349 +1,262 @@
-# Fraud Risk Analysis and Vendor Evaluation
+# Fraud Risk Analysis
 
-A reproducible Python case study with two deliberately separate analyses: operational application monitoring and vendor-enriched fraud modeling.
+A leakage-aware fraud case study covering operational monitoring, vendor-value analysis, classical model tuning, tabular foundation-model benchmarking, and a production-oriented CatBoost probability-scoring path.
 
-## Project scope
+Fraud v1.0 freezes the completed Phases 1–4 research results. It does not continue model tuning, reuse Test for new decisions, or claim that a benchmark winner is automatically the best deployment choice.
 
-### Task 1: operational monitoring
+## Business problem
 
-Task 1 uses `p1-dataset`, which contains payment applications from April through September 2019. Its `application_date` is a genuine operational time axis used for:
+The repository contains two deliberately separate analyses:
 
-- application-volume trends;
-- approval and fraud-rate trends;
-- daily and product-level aggregation; and
-- a specified anomaly-window comparison.
+- **Task 1 — operational monitoring:** analyzes payment applications from April through September 2019 using a genuine `application_date` time axis.
+- **Task 2 — fraud modeling and vendor evaluation:** uses a selected sample of approximately 3,000 historical merchants, roughly half labeled as fraud, with FraudKiller enrichment fields.
 
-### Task 2: modeling and vendor evaluation
+Task 2 asks whether the available signals discriminate fraudulent merchants and whether the vendor fields add predictive value. It is a fixed retrospective benchmark, not a production rollout or natural-prevalence study.
 
-Task 2 uses `p2-dataset`, a selected sample of approximately 3,000 historical merchants with roughly half labeled as fraud and corresponding FraudKiller records. It is not treated as a naturally sampled chronological production stream.
+## Data and evaluation design
 
-Task 2 therefore uses a reproducible stratified train/validation/test benchmark. It compares XGBoost and CatBoost, converts fraud probabilities into business decisions, and estimates whether FraudKiller provides enough incremental value to justify its cost.
+The original `FraudCaseStudy.xlsx` is excluded from Git. To reproduce the research workflows, place an authorized copy in the repository root or pass its path with `--input`.
 
-## Repository structure
+Task 2 uses a reproducible label-stratified split with `random_state=42`:
 
-```text
-fraud_detection/
-    applications.py             Task 1 cleaning and temporal aggregation
-    common.py                   Shared normalization and validation helpers
-    modeling.py                 Task 2 split, model paths, and evaluation
-    feature_analysis.py         Train/Validation feature investigation
-    tuning.py                   Train-only Optuna optimization and final confirmation
-    foundation_models.py        Stage C foundation-model Validation benchmark
-    foundation_finalization.py  Gated Stage D freeze and Stage E Test confirmation
-    profit.py                   Decision thresholds and expected-profit logic
-    vendor.py                   Vendor-data cleaning and feature definitions
-tests/                          Synthetic-data unit tests
-docs/
-    figures/                    Curated README visualizations
-    results/                    Publishable result and split-audit tables
-prepare_application_metrics.py  Generate Task 1 daily metrics
-plot_application_anomalies.py   Plot a specified Task 1 anomaly window
-clean_vendor_dataset.py         Normalize the vendor-enriched Task 2 data
-compare_fraud_models.py         Run the stratified Task 2 benchmark
-evaluate_vendor_profit.py       Evaluate with/without-vendor scenarios
-investigate_features.py         Run audit, importance, and ablation experiments
-tune_models.py                  Tune the frozen 14-feature classical benchmarks
-benchmark_foundation_models.py  Run foundation models on Train -> Validation
-finalize_foundation_models.py   Freeze configurations, then run final Test confirmation
-generate_project_figures.py     Rebuild README figures and result tables
-```
-
-## Data
-
-The original `FraudCaseStudy.xlsx` workbook is excluded from Git because application-level case-study data should not be published without explicit permission.
-
-To reproduce the analysis, place the workbook in the repository root or pass its local path with `--input`. The expected worksheet names are `p1-dataset` and `p2-dataset`.
-
-The business meaning of Task 2's `open_date` is not established by the case-study description. The primary benchmark does not use it for splitting and excludes raw `open_date`, `open_year`, `open_month`, and `open_day_of_week` from model inputs.
-
-## Setup
-
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
-python -m pip install -r requirements.txt
-```
-
-The foundation-model benchmark was verified with Python 3.12.13, PyTorch
-2.12.1+cu130, CUDA runtime 13.0, and an NVIDIA GeForce RTX 5060. PyTorch is not
-pinned in `requirements.txt` because the appropriate CUDA build is
-platform-specific.
-
-## Run the workflows
-
-```bash
-python prepare_application_metrics.py
-python plot_application_anomalies.py \
-  --anomaly-start 2019-06-25 \
-  --anomaly-end 2019-07-04
-
-python clean_vendor_dataset.py
-python compare_fraud_models.py
-python investigate_features.py --n-repeats 5
-python tune_models.py --trials 40
-python benchmark_foundation_models.py
-python finalize_foundation_models.py
-python evaluate_vendor_profit.py \
-  --approve-threshold 0.2 \
-  --decline-threshold 0.8
-
-python generate_project_figures.py
-```
-
-Intermediate files are written to the ignored `outputs/` directory. Curated figures and compact result tables are written to `docs/` and tracked by Git.
-
-## Task 2 model paths
-
-### XGBoost
-
-- numerical median imputation;
-- boolean most-frequent imputation;
-- categorical most-frequent imputation and one-hot encoding with unknown-category handling; and
-- conservative `XGBClassifier` defaults without aggressive tuning.
-
-### CatBoost
-
-- numerical median imputation;
-- categorical most-frequent imputation;
-- categorical columns preserved as named string features; and
-- native CatBoost categorical handling with training verbosity disabled.
-
-Preprocessing is fitted only on the training partition. Neither validation nor test values contribute to imputation or encoding statistics.
-
-## Task 2 evaluation design
-
-The selected vendor-evaluation sample is split with `random_state=42`, stratified on `is_fraud`:
-
-- 70% training;
-- 15% validation; and
-- 15% final test.
-
-Models are fitted on Train only. Validation PR-AUC is the primary comparison metric and supports later model-selection decisions. Both fitted models are then reported on the same untouched Test partition.
-
-The benchmark also reports ROC-AUC, accuracy, balanced accuracy, precision, recall, and F1. Threshold-based metrics use a fixed probability threshold of 0.5. Positive-class prevalence is reported because it is the expected PR-AUC of a random ranking baseline.
-
-### Split audit
-
-| Split | N | Fraud | Non-Fraud | Fraud rate |
+| Split | N | Fraud | Non-fraud | Fraud rate |
 |---|---:|---:|---:|---:|
 | Train | 1,942 | 939 | 1,003 | 48.35% |
 | Validation | 416 | 201 | 215 | 48.32% |
 | Test | 417 | 202 | 215 | 48.44% |
 
-The machine-readable audit is available in [`docs/results/split_audit.csv`](docs/results/split_audit.csv).
+This intentionally selected, approximately balanced sample must not be interpreted as expected production fraud prevalence. Validation was used across several development stages and is not repeatedly independent confirmation. Test was used only for the frozen Phase 3/4 confirmations and was not reused for the deferred TabPrep work.
 
-## Results
+The business meaning of `open_date` is not established by the case-study description. Raw and derived open-date fields are excluded from the primary benchmark.
 
-### Task 1 application trends
+## Leakage-safe modeling
 
-![Daily payment applications](docs/figures/daily_applications.png)
+The frozen primary feature set contains 14 source fields:
 
-![Fraud rate among approved applications](docs/figures/approved_fraud_rate.png)
+```text
+ea_score, identity_rank, reputation_level, volume_score, result_number,
+email_days, is_valid, is_connected, personal_device, receiving_mail,
+area_code, device_browser_type, ip_address_loc_country, type
+```
 
-The highlighted period is a specified case-study window, not an automatically detected anomaly or a causal estimate.
+Preprocessing is learned from the fitting partition only. XGBoost receives imputed and one-hot-encoded data. CatBoost receives median/mode-imputed data while retaining named categorical features for native handling. The target never enters the feature matrix.
 
-### Task 2 stratified model comparison
+`result_number` is a numeric vendor count—the number of results returned for a record—not an identifier. Predictive importance is described as association with model predictions, not evidence that a feature causes fraud.
 
-| Model | Validation PR-AUC | Validation ROC-AUC | Test PR-AUC | Test ROC-AUC | Test precision | Test recall | Test F1 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| XGBoost | **0.9630** | **0.9557** | 0.9459 | 0.9366 | **0.9185** | **0.8366** | **0.8756** |
-| CatBoost | 0.9576 | 0.9501 | **0.9490** | **0.9405** | 0.9056 | 0.8069 | 0.8534 |
+## Feature investigation
 
-![Stratified Task 2 model comparison](docs/figures/model_comparison.png)
+Train/Validation-only permutation importance, TreeSHAP, missingness analysis, and ablations identified `email_days`, `ea_score`, `device_browser_type`, `identity_rank`, and `type` as the strongest recurring signals. The five-feature result remains a separate compact ablation; hyperparameter tuning and the foundation-model benchmark use the frozen 14-feature primary representation.
 
-XGBoost is selected by validation PR-AUC. Test results are still reported for both models. Validation prevalence is 48.32% and test prevalence is 48.44%, providing the corresponding random-ranking PR-AUC baselines.
+Vendor-only features were stronger than in-house-only features on Validation, while their combination performed best. `email_days` showed the largest incremental association in the leave-one-vendor-feature-out analysis. These findings are sample-specific and do not establish causal vendor value.
 
-The exact machine-readable results are available in [`docs/results/model_comparison.csv`](docs/results/model_comparison.csv).
-
-## Feature Investigation
-
-All feature statistics, missingness rules, importance calculations, ablations, and reduced-set decisions use Train/Validation only. Test is accessed only after one final feature configuration has been selected. Importance describes predictive association with model output, not a causal effect on fraud.
-
-### Availability and leakage audit
-
-The primary feature matrix contains 14 allowed fields: five in-house and nine FraudKiller fields. `is_fraud` is the target and never enters `X`. Raw `open_date` plus `open_year`, `open_month`, and `open_day_of_week` remain excluded. `result_number` is an allowed numeric vendor feature: the FraudKiller data dictionary defines it as the number of results returned for the record. It is a count, not an identifier, so it is not flagged as ID-like. The data dictionary does not establish why the count may be associated with fraud, and no causal interpretation is claimed.
-
-The complete machine-readable outputs include:
+Relevant artifacts include:
 
 - [`feature_audit.csv`](docs/results/feature_audit.csv)
-- [`feature_availability.csv`](docs/results/feature_availability.csv)
-- [`missingness_analysis.csv`](docs/results/missingness_analysis.csv)
 - [`permutation_importance.csv`](docs/results/permutation_importance.csv)
 - [`shap_feature_importance.csv`](docs/results/shap_feature_importance.csv)
 - [`feature_group_ablation.csv`](docs/results/feature_group_ablation.csv)
 - [`vendor_feature_ablation.csv`](docs/results/vendor_feature_ablation.csv)
-- [`missing_indicator_comparison.csv`](docs/results/missing_indicator_comparison.csv)
-- [`reduced_feature_comparison.csv`](docs/results/reduced_feature_comparison.csv)
 - [`final_feature_confirmation.csv`](docs/results/final_feature_confirmation.csv)
-
-### Missingness findings
-
-Train-only missingness is strongly associated with the observed label for several fields:
-
-| Feature | Missing rate | Fraud rate missing | Fraud rate present | Difference |
-|---|---:|---:|---:|---:|
-| `ea_score` | 21.01% | 95.34% | 35.85% | +59.49 pp |
-| `identity_rank` | 2.27% | 97.73% | 47.21% | +50.52 pp |
-| `is_connected` | 17.40% | 84.32% | 40.77% | +43.55 pp |
-
-Missing indicators are tested only when Train missingness is between 1% and 95%. Adding six indicators reduced XGBoost Validation PR-AUC from 0.9630 to 0.9617 and increased CatBoost from 0.9576 to 0.9615. Adding the interpretable `vendor_missing_count` produced 0.9621 and 0.9614 respectively. The engineered variants were therefore not selected over the simpler reduced configuration.
-
-### Permutation importance and SHAP
-
-Validation PR-AUC permutation importance and native TreeSHAP agree on the dominant fields:
-
-| Model | Leading permutation features | Leading SHAP features |
-|---|---|---|
-| XGBoost | `email_days`, `ea_score`, `type`, `device_browser_type`, `identity_rank` | `email_days`, `ea_score`, `device_browser_type`, `identity_rank`, `type` |
-| CatBoost | `email_days`, `ea_score`, `type`, `device_browser_type`, `identity_rank` | `email_days`, `ea_score`, `device_browser_type`, `type`, `identity_rank` |
 
 ![Global SHAP feature importance](docs/figures/shap_feature_importance.png)
 
-These fields contributed strongly to model predictions; the analysis does not establish that they cause fraud.
+## Vendor value analysis
 
-### Vendor contribution
+The FraudKiller comparison uses fixed illustrative case-study assumptions for revenue, fraud loss, manual-review cost, vendor cost, and review approval rate. It is not a production profit forecast.
 
-| Feature set | XGBoost Validation PR-AUC | CatBoost Validation PR-AUC |
-|---|---:|---:|
-| In-house only | 0.8881 | 0.8954 |
-| Vendor only | 0.9420 | 0.9354 |
-| In-house + vendor | **0.9630** | **0.9576** |
-
-The controlled leave-one-vendor-feature-out experiment identifies `email_days` as the dominant incremental vendor field: removing it lowered Validation PR-AUC by 0.0662 for XGBoost and 0.0610 for CatBoost. Other individual vendor removals had much smaller effects in this sample.
-
-### Reduced feature set
-
-The ranking is derived from Validation permutation importance averaged across both models. The selection rule chooses the smallest configuration within 0.002 mean Validation PR-AUC of the best candidate. It selected:
-
-```text
-ea_score, identity_rank, email_days, device_browser_type, type
-```
-
-| Model | Configuration | Validation PR-AUC | Test PR-AUC | Test ROC-AUC |
-|---|---|---:|---:|---:|
-| XGBoost | Original 14 | 0.9630 | 0.9459 | 0.9366 |
-| XGBoost | Final 5 | **0.9636** | **0.9461** | 0.9362 |
-| CatBoost | Original 14 | 0.9576 | **0.9490** | **0.9405** |
-| CatBoost | Final 5 | **0.9641** | 0.9458 | 0.9368 |
-
-The final five-feature configuration was chosen before these Test results were calculated. It materially reduces complexity while retaining similar performance; Test numbers are confirmation, not selection criteria.
-
-## Hyperparameter Optimization
-
-The classical tuning phase uses Optuna's seeded TPE Bayesian optimizer for XGBoost and CatBoost. It always uses the full 14-feature primary benchmark; the five-feature compact model above remains a separate, unchanged ablation.
-
-Each Optuna trial is evaluated only within the existing Train partition using five-fold `StratifiedKFold` with `shuffle=True` and `random_state=42`. Mean cross-validation PR-AUC is maximized and its fold standard deviation is recorded. The fixed Validation partition is not reused by individual trials: it is accessed once after each search to compare the repository default with the best tuned candidate and freeze one configuration per model. Only after both decisions are frozen are Train and Validation combined for a single final Test evaluation.
-
-The default run uses 40 trials per model and a seeded `TPESampler(seed=42)`:
-
-```bash
-python tune_models.py --trials 40
-# Optional independent budgets
-python tune_models.py --xgb-trials 40 --catboost-trials 40
-```
-
-The run writes:
-
-- [`hyperparameter_trials.csv`](docs/results/hyperparameter_trials.csv), with candidate parameters and Train-CV PR-AUC;
-- [`tuned_model_comparison.csv`](docs/results/tuned_model_comparison.csv), with default/tuned CV and Validation metrics;
-- [`best_hyperparameters.json`](docs/results/best_hyperparameters.json), with the frozen choices, seeds, and trial counts;
-- [`final_tuned_test_comparison.csv`](docs/results/final_tuned_test_comparison.csv), containing the one-time Test confirmation.
-
-Validation PR-AUC changes below 0.001 are described as negligible, changes below 0.005 as marginal, and larger gains as meaningful. Negative changes retain the default configuration.
-
-### Optimization results
-
-The completed run used 40 trials per model. Both searches completed all 40 trials, and both tuned candidates produced marginal Validation PR-AUC improvements. The tuned configuration was therefore frozen for each model before Test was accessed.
-
-| Model | Configuration | Train-CV PR-AUC | Validation PR-AUC | Validation ROC-AUC | Validation delta | Frozen |
-|---|---|---:|---:|---:|---:|---|
-| XGBoost | Default | 0.9501 | 0.9630 | 0.9557 | N/A | No |
-| XGBoost | Tuned | **0.9532** | **0.9670** | **0.9608** | +0.0040 (marginal) | **Yes** |
-| CatBoost | Default | 0.9457 | 0.9576 | 0.9501 | N/A | No |
-| CatBoost | Tuned | **0.9510** | **0.9623** | **0.9532** | +0.0047 (marginal) | **Yes** |
-
-After freezing both choices, each tuned model was refitted once on Train+Validation and evaluated on the untouched Test partition:
-
-| Model | Frozen configuration | Validation PR-AUC | Test PR-AUC | Test ROC-AUC | Test precision | Test recall | Test F1 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| XGBoost | Tuned | 0.9670 | 0.9483 | 0.9382 | 0.9176 | 0.8267 | 0.8698 |
-| CatBoost | Tuned | 0.9623 | **0.9524** | **0.9457** | **0.9185** | **0.8366** | **0.8756** |
-
-XGBoost optimization took approximately 62 seconds; its final Train+Validation fit took 0.36 seconds and Test inference took 0.015 seconds. CatBoost optimization took approximately 6,381 seconds (106.4 minutes); its final fit took 42.28 seconds and Test inference took 0.010 seconds. These are approximate single-run wall-clock measurements from the local environment.
-
-## Tabular Foundation Model Benchmark
-
-TabPFN-3 and TabICLv2 use the same fixed stratified 70/15/15 split and the
-same ordered 14-feature primary information set as the tuned XGBoost and
-CatBoost baselines. Each foundation model receives the unencoded pandas feature
-frame and uses its native categorical and missing-value preprocessing. Neither
-foundation model received model-specific hyperparameter optimization: the
-official default eight-estimator inference configuration was used with the
-verified cached checkpoint and CUDA.
-
-Both foundation-model configurations were evaluated on Train -> Validation,
-then persisted with `configuration_status="frozen"` in
-[`foundation_model_configs.json`](docs/results/foundation_model_configs.json).
-The file was reloaded and validated before Test features were accessed. Each
-frozen model was subsequently contextualized once on Train+Validation and
-evaluated once on Test with the unchanged probability threshold of 0.5. PR-AUC
-remains the primary metric.
-
-| Model | Validation PR-AUC | Validation ROC-AUC | Test PR-AUC | Test ROC-AUC | Test precision | Test recall | Test F1 | Test balanced accuracy | Test accuracy |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Tuned XGBoost | 0.9670 | 0.9608 | 0.9483 | 0.9382 | 0.9176 | 0.8267 | 0.8698 | 0.8785 | 0.8801 |
-| Tuned CatBoost | 0.9623 | 0.9532 | 0.9524 | 0.9457 | 0.9185 | 0.8366 | 0.8756 | 0.8834 | 0.8849 |
-| TabPFN-3 | 0.9695 | 0.9627 | 0.9555 | 0.9466 | 0.9560 | 0.8614 | 0.9063 | 0.9121 | 0.9137 |
-| TabICLv2 | **0.9719** | **0.9663** | **0.9593** | **0.9509** | **0.9615** | **0.8663** | **0.9115** | **0.9169** | **0.9185** |
-
-![Frozen model family Validation and Test PR-AUC](docs/figures/model_family_comparison.png)
-
-The Stage C foundation-model Validation improvements over tuned XGBoost were
-slight: +0.0025 PR-AUC for TabPFN-3 and +0.0049 for TabICLv2. The Validation
-ordering persisted on Test. Validation minus Test PR-AUC was 0.0187 for tuned
-XGBoost, 0.0099 for tuned CatBoost, 0.0141 for TabPFN-3, and 0.0127 for
-TabICLv2. On this fixed split, both pretrained models retained slightly higher
-Test PR-AUC than the tuned classical baselines; these single-split differences
-should not be interpreted as universal model-family superiority.
-
-Final foundation-model downstream timing excludes checkpoint downloads and
-external pretraining. TabPFN-3 required 0.79 seconds for downstream
-fit/context and 2.18 seconds for Test inference, with 388 MiB peak CUDA memory
-allocated. TabICLv2 required 0.50 seconds for downstream fit/context and 0.59
-seconds for Test inference, with 676 MiB allocated. These values are not
-end-to-end training costs: foundation-model external pretraining is not
-measured. Conversely, the classical timing distinguishes task-specific Optuna
-optimization (about 62 seconds for XGBoost and 6,381 seconds for CatBoost) from
-their much smaller final fit/inference costs.
-
-Machine-readable outputs are available in
-[`foundation_model_validation.csv`](docs/results/foundation_model_validation.csv),
-[`foundation_model_test.csv`](docs/results/foundation_model_test.csv), and
-[`model_family_comparison.csv`](docs/results/model_family_comparison.csv).
-
-### FraudKiller vendor evaluation
+| Scenario | Holdout ROC-AUC | Holdout PR-AUC | Expected profit under case assumptions |
+|---|---:|---:|---:|
+| Without FraudKiller | 0.8829 | 0.8520 | $53,520.00 |
+| With FraudKiller | 0.9443 | 0.9506 | $95,010.50 |
 
 ![Vendor predictive and economic evaluation](docs/figures/vendor_evaluation.png)
 
-| Scenario | Holdout ROC-AUC | Holdout PR-AUC | Expected profit |
-|---|---:|---:|---:|
-| Without FraudKiller data | 0.8829 | 0.8520 | $53,520.00 |
-| With FraudKiller data | 0.9443 | 0.9506 | $95,010.50 |
+## Classical model tuning
 
-The vendor comparison preserves the case-study assumptions: $40 monthly revenue per approved merchant for 12 months, $500 fraud loss, $50 manual-review cost, $0.50 vendor call cost, and a 30% manual-review approval rate. Scenario outputs are not production forecasts.
+Optuna's seeded TPE optimizer evaluated XGBoost and CatBoost using five-fold stratified CV entirely inside Train. Validation was then used to freeze one configuration per model. Only after both configurations were frozen were they refitted on Train+Validation for a one-time Test confirmation.
 
-## Testing
+The exact selected parameters are stored in [`best_hyperparameters.json`](docs/results/best_hyperparameters.json). No further HPO is performed during productionization.
+
+## Tabular foundation-model benchmark
+
+TabPFN-3 and TabICLv2 received the same ordered, unencoded 14-feature information set. Both used frozen/default pretrained eight-estimator configurations with no task-specific HPO. Their configurations were frozen after Train-to-Validation evaluation and reloaded before the one-time Test confirmation.
+
+The foundation-model results are meaningful research findings rather than automatic deployment recommendations.
+
+## Final model-family conclusion
+
+| Model | Validation PR-AUC | Test PR-AUC | Test ROC-AUC | Test F1 at 0.5 |
+|---|---:|---:|---:|---:|
+| Tuned XGBoost | 0.9670 | 0.9483 | 0.9382 | 0.8698 |
+| Tuned CatBoost | 0.9623 | 0.9524 | 0.9457 | 0.8756 |
+| TabPFN-3 | 0.9695 | 0.9555 | 0.9466 | 0.9063 |
+| **TabICLv2** | **0.9719** | **0.9593** | **0.9509** | **0.9115** |
+
+**Best research benchmark:** TabICLv2. On this fixed benchmark, tuning-free TabICLv2 achieved the strongest held-out PR-AUC and ROC-AUC, slightly outperforming the tuned boosting baselines. This does not establish that TabICL is universally better than boosting or that it will generalize identically elsewhere.
+
+**Production-oriented candidate:** tuned CatBoost. Benchmark ranking alone was not treated as a deployment decision. CatBoost retains competitive discrimination, native categorical handling, mature feature-importance/SHAP tooling, low measured inference latency in this experiment, and a simpler operational footprint than the local foundation-model stack. CatBoost was not the highest-scoring model and is not presented as a proven production winner, the cheapest model, or the optimal deployment model.
+
+The foundation models achieved slightly stronger discrimination, but those gains alone cannot determine whether their additional operational requirements justify replacing a simpler boosting candidate.
+
+All four models showed a modest Validation-to-Test PR-AUC decrease, on the order of roughly 0.01–0.02 on this split. Exact differences are preserved in [`production_model_metadata.json`](docs/results/production_model_metadata.json). They are descriptive gaps, not formal statistical evidence of overfitting.
+
+### Threshold caveat
+
+Precision, recall, and F1 use a shared probability threshold of 0.5 for comparability. No model-specific threshold optimization or probability calibration was performed. Observed operating-point differences may partly reflect this shared, non-optimized threshold and must not be interpreted as each model's optimal business policy. PR-AUC and ROC-AUC are the cleaner threshold-independent discrimination comparisons here.
+
+## Production-oriented CatBoost path
+
+The production layer separates three responsibilities:
+
+```text
+frozen CatBoost + frozen preprocessing
+    -> fraud_probability
+
+optional, explicitly configured DecisionPolicy
+    -> approve / manual_review / decline
+```
+
+[`fraud_detection/production.py`](fraud_detection/production.py) provides:
+
+- loading and validation of the frozen Phase 3 CatBoost configuration;
+- exact 14-feature schema and ordering checks;
+- numeric, boolean, and categorical validation;
+- native CatBoost model plus persisted preprocessing-state loading;
+- bounded `predict_proba` fraud probabilities; and
+- an optional decision-policy function requiring explicit thresholds.
+
+No policy thresholds are configured by default. Without both `review_threshold` and `decline_threshold`, the CLI returns probabilities only. Any supplied thresholds are caller-owned business policy inputs, not optimized or recommended values.
+
+### Serialized model status
+
+No reusable `.cbm` existed when this pass began, and the repository does not contain a saved Train+Validation membership artifact that would allow refitting without reconstructing the split from labels. To avoid touching Test labels again, this pass does not rebuild the model from the complete Task 2 file.
+
+[`build_production_model.py`](build_production_model.py) instead requires an explicitly prepared development-only CSV containing the frozen Train+Validation rows and no Test rows. The caller must attest this with `--confirm-development-only`. This flag records the user's declaration only: the code cannot determine or prove that an arbitrary CSV has the correct split membership or excludes Test. Split membership must be verified independently before invoking the build. The script then loads the exact CatBoost parameters from the frozen JSON and writes:
+
+```text
+artifacts/catboost_fraud_model.cbm
+artifacts/catboost_preprocessor.json
+```
+
+Generated model binaries and preprocessing state are ignored by Git. The tracked metadata records that the artifact has not yet been built in-repository and that the current repository state is not deployment-ready.
+
+### Input schema
+
+- Numeric: `ea_score`, `identity_rank`, `reputation_level`, `volume_score`, `result_number`, `email_days`
+- Boolean encoded as 0/1/missing: `is_valid`, `is_connected`, `personal_device`, `receiving_mail`
+- Categorical: `area_code`, `device_browser_type`, `ip_address_loc_country`, `type`
+
+All 14 columns are required, even when individual values are missing. Unknown, duplicate, missing, or extra columns fail clearly. Non-numeric values in numeric fields and non-binary values in boolean fields are rejected rather than silently reinterpreted. Missing values retain the established Train-fitted median/mode policy.
+
+## Production monitoring considerations
+
+**Design considerations only—not an implemented monitoring system.** A real deployment should eventually observe:
+
+- schema violations and inference errors;
+- missingness and numeric-distribution drift;
+- categorical-distribution drift;
+- prediction-score drift;
+- approve/review/decline volume drift after a policy exists;
+- observed fraud-rate drift when delayed ground truth arrives;
+- precision, recall, and calibration degradation once labels mature;
+- latency and model/version metadata; and
+- evidence-based triggers for retraining review.
+
+No dashboard, alert threshold, logging pipeline, scheduler, registry integration, or retraining automation is implemented here.
+
+## Limitations
+
+- Task 2's approximately 50% fraud rate is selected benchmark prevalence, not expected production prevalence.
+- Production threshold selection requires real prevalence, false-negative loss, false-positive rejection cost, review cost/capacity, merchant economics, and calibrated probabilities. These inputs are unavailable.
+- Validation was reused across development stages and should not be represented as repeated independent confirmation.
+- The single fixed benchmark does not establish external or prospective generalization.
+- Shared-threshold F1 differences do not prove calibration differences, and threshold tuning is not assumed to reverse model ordering.
+- Existing SHAP and importance values describe association with predictions, not causality.
+- Deployment SLA, throughput, infrastructure cost, probability calibration, and live policy outcomes were not measured.
+
+## What Fraud v1.0 includes
+
+Implemented:
+
+- frozen Phases 1–4 research documentation;
+- production-oriented CatBoost probability inference;
+- strict schema validation and deterministic config metadata;
+- reproducible development-only model build/loading path;
+- optional explicitly configured decision-policy interface;
+- unit tests and documented monitoring considerations; and
+- a deferred TabPrep backlog.
+
+Not implemented:
+
+- business-calibrated approve/review/decline thresholds;
+- probability calibration or natural production prevalence estimation;
+- external prospective validation;
+- live monitoring, retraining, registry, or deployment infrastructure; and
+- real-data TabPrep experiments.
+
+## Reproduction
+
+Create and activate an environment, then install dependencies:
+
+```bash
+python -m venv .venv
+python -m pip install -r requirements.txt
+```
+
+Run synthetic-data tests:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Tests use synthetic data and cover Task 1 temporal aggregation, Task 2 stratification and split auditing, excluded features, leakage-safe preprocessing, missing indicators, feature audits, original-level permutation importance, validation-only ablation, active model families, probability outputs, business thresholds, and profit calculations. GitHub Actions runs the same command for each push and pull request.
+Regenerate production metadata from frozen artifacts without fitting or scoring:
+
+```bash
+python generate_production_metadata.py
+```
+
+Build the native CatBoost artifact only from an independently verified Train+Validation CSV that excludes Test:
+
+```bash
+python build_production_model.py \
+  --input <train_validation_only.csv> \
+  --confirm-development-only
+```
+
+Prediction requires both production artifacts to exist first:
+
+```text
+artifacts/catboost_fraud_model.cbm
+artifacts/catboost_preprocessor.json
+```
+
+A fresh clone cannot run `predict_fraud.py` until `build_production_model.py` has been run with an independently verified development-only input, or equivalent approved artifacts have been supplied. Missing artifacts produce an explicit `FileNotFoundError`.
+
+After those artifacts exist, return probability only:
+
+```bash
+python predict_fraud.py --input <merchants.json>
+```
+
+Optionally apply caller-supplied business thresholds:
+
+```bash
+python predict_fraud.py \
+  --input <merchants.csv> \
+  --review-threshold <business-supplied-value> \
+  --decline-threshold <business-supplied-value>
+```
+
+These thresholds have no defaults and are not derived from production prevalence, cost optimization, or probability calibration.
+
+Research workflow scripts remain available for reproducibility, but frozen Test experiments should not be rerun for model selection. Compact results are tracked under `docs/results/`; intermediate data remains ignored under `outputs/`.
 
 ## Future work
 
-Date-feature ablations, calibration, and ensemble experiments remain possible future work; they are outside the frozen benchmark reported here.
+- production probability calibration;
+- cost-sensitive policy selection using real prevalence and business inputs;
+- external or prospective validation;
+- implemented drift and performance monitoring; and
+- exploratory TabPrep representation ablation.
+
+TabPrep's implementation was verified and smoke-tested synthetically, expanding 14 synthetic features to 964. No real fraud data was used. The real-data ablation was deferred to avoid extending the benchmark after Test results were known. Details and recoverable local exploration references are archived in [`docs/phase5_tabprep_backlog.md`](docs/phase5_tabprep_backlog.md).
