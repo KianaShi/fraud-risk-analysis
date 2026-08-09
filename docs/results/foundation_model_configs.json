@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "stage": "D",
+  "freeze_timestamp_utc": "2026-08-09T00:14:09.172328+00:00",
+  "protocol": "Configurations frozen from Stage C before Stage E Test feature access.",
+  "models": {
+    "tabpfn_3": {
+      "package": "tabpfn",
+      "package_version": "8.1.0",
+      "model_family": "TabPFN-3",
+      "estimator_class": "TabPFNClassifier",
+      "checkpoint": "tabpfn-v3-classifier-v3_default.ckpt",
+      "n_estimators": 8,
+      "random_state": 42,
+      "device": "cuda",
+      "feature_names": [
+        "ea_score",
+        "identity_rank",
+        "reputation_level",
+        "volume_score",
+        "result_number",
+        "email_days",
+        "is_valid",
+        "is_connected",
+        "personal_device",
+        "receiving_mail",
+        "area_code",
+        "device_browser_type",
+        "ip_address_loc_country",
+        "type"
+      ],
+      "categorical_columns": [
+        "area_code",
+        "device_browser_type",
+        "ip_address_loc_country",
+        "type"
+      ],
+      "categorical_indices": [
+        10,
+        11,
+        12,
+        13
+      ],
+      "preprocessing_policy": "TabPFN native preprocessing with categorical_features_indices",
+      "classification_threshold": 0.5,
+      "stage_c_validation_metrics": {
+        "pr_auc": 0.9695110966739664,
+        "roc_auc": 0.962721277334259,
+        "precision": 0.946236559139785,
+        "recall": 0.8756218905472637,
+        "f1": 0.909560723514212,
+        "balanced_accuracy": 0.9145551313201434,
+        "accuracy": 0.9158653846153846
+      },
+      "configuration_status": "frozen",
+      "model_specific_hpo_performed": false,
+      "hpo_statement": "No model-specific hyperparameter optimization was performed."
+    },
+    "tabicl_v2": {
+      "package": "tabicl",
+      "package_version": "2.1.1",
+      "model_family": "TabICLv2",
+      "estimator_class": "TabICLClassifier",
+      "checkpoint": "tabicl-classifier-v2-20260212.ckpt",
+      "n_estimators": 8,
+      "random_state": 42,
+      "device": "cuda",
+      "feature_names": [
+        "ea_score",
+        "identity_rank",
+        "reputation_level",
+        "volume_score",
+        "result_number",
+        "email_days",
+        "is_valid",
+        "is_connected",
+        "personal_device",
+        "receiving_mail",
+        "area_code",
+        "device_browser_type",
+        "ip_address_loc_country",
+        "type"
+      ],
+      "categorical_columns": [
+        "area_code",
+        "device_browser_type",
+        "ip_address_loc_country",
+        "type"
+      ],
+      "categorical_indices": null,
+      "preprocessing_policy": "TabICL native pandas dtype preprocessing",
+      "classification_threshold": 0.5,
+      "stage_c_validation_metrics": {
+        "pr_auc": 0.9719452255967672,
+        "roc_auc": 0.9663079949091752,
+        "precision": 0.946524064171123,
+        "recall": 0.8805970149253731,
+        "f1": 0.9123711340206184,
+        "balanced_accuracy": 0.9170426935091982,
+        "accuracy": 0.9182692307692308
+      },
+      "configuration_status": "frozen",
+      "model_specific_hpo_performed": false,
+      "hpo_statement": "No model-specific hyperparameter optimization was performed."
+    }
+  }
+}

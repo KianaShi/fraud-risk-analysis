@@ -28,6 +28,8 @@ fraud_detection/
     modeling.py                 Task 2 split, model paths, and evaluation
     feature_analysis.py         Train/Validation feature investigation
     tuning.py                   Train-only Optuna optimization and final confirmation
+    foundation_models.py        Stage C foundation-model Validation benchmark
+    foundation_finalization.py  Gated Stage D freeze and Stage E Test confirmation
     profit.py                   Decision thresholds and expected-profit logic
     vendor.py                   Vendor-data cleaning and feature definitions
 tests/                          Synthetic-data unit tests
@@ -41,6 +43,8 @@ compare_fraud_models.py         Run the stratified Task 2 benchmark
 evaluate_vendor_profit.py       Evaluate with/without-vendor scenarios
 investigate_features.py         Run audit, importance, and ablation experiments
 tune_models.py                  Tune the frozen 14-feature classical benchmarks
+benchmark_foundation_models.py  Run foundation models on Train -> Validation
+finalize_foundation_models.py   Freeze configurations, then run final Test confirmation
 generate_project_figures.py     Rebuild README figures and result tables
 ```
 
@@ -64,6 +68,11 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
+The foundation-model benchmark was verified with Python 3.12.13, PyTorch
+2.12.1+cu130, CUDA runtime 13.0, and an NVIDIA GeForce RTX 5060. PyTorch is not
+pinned in `requirements.txt` because the appropriate CUDA build is
+platform-specific.
+
 ## Run the workflows
 
 ```bash
@@ -76,6 +85,8 @@ python clean_vendor_dataset.py
 python compare_fraud_models.py
 python investigate_features.py --n-repeats 5
 python tune_models.py --trials 40
+python benchmark_foundation_models.py
+python finalize_foundation_models.py
 python evaluate_vendor_profit.py \
   --approve-threshold 0.2 \
   --decline-threshold 0.8
@@ -264,6 +275,56 @@ After freezing both choices, each tuned model was refitted once on Train+Validat
 
 XGBoost optimization took approximately 62 seconds; its final Train+Validation fit took 0.36 seconds and Test inference took 0.015 seconds. CatBoost optimization took approximately 6,381 seconds (106.4 minutes); its final fit took 42.28 seconds and Test inference took 0.010 seconds. These are approximate single-run wall-clock measurements from the local environment.
 
+## Tabular Foundation Model Benchmark
+
+TabPFN-3 and TabICLv2 use the same fixed stratified 70/15/15 split and the
+same ordered 14-feature primary information set as the tuned XGBoost and
+CatBoost baselines. Each foundation model receives the unencoded pandas feature
+frame and uses its native categorical and missing-value preprocessing. Neither
+foundation model received model-specific hyperparameter optimization: the
+official default eight-estimator inference configuration was used with the
+verified cached checkpoint and CUDA.
+
+Both foundation-model configurations were evaluated on Train -> Validation,
+then persisted with `configuration_status="frozen"` in
+[`foundation_model_configs.json`](docs/results/foundation_model_configs.json).
+The file was reloaded and validated before Test features were accessed. Each
+frozen model was subsequently contextualized once on Train+Validation and
+evaluated once on Test with the unchanged probability threshold of 0.5. PR-AUC
+remains the primary metric.
+
+| Model | Validation PR-AUC | Validation ROC-AUC | Test PR-AUC | Test ROC-AUC | Test precision | Test recall | Test F1 | Test balanced accuracy | Test accuracy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Tuned XGBoost | 0.9670 | 0.9608 | 0.9483 | 0.9382 | 0.9176 | 0.8267 | 0.8698 | 0.8785 | 0.8801 |
+| Tuned CatBoost | 0.9623 | 0.9532 | 0.9524 | 0.9457 | 0.9185 | 0.8366 | 0.8756 | 0.8834 | 0.8849 |
+| TabPFN-3 | 0.9695 | 0.9627 | 0.9555 | 0.9466 | 0.9560 | 0.8614 | 0.9063 | 0.9121 | 0.9137 |
+| TabICLv2 | **0.9719** | **0.9663** | **0.9593** | **0.9509** | **0.9615** | **0.8663** | **0.9115** | **0.9169** | **0.9185** |
+
+![Frozen model family Validation and Test PR-AUC](docs/figures/model_family_comparison.png)
+
+The Stage C foundation-model Validation improvements over tuned XGBoost were
+slight: +0.0025 PR-AUC for TabPFN-3 and +0.0049 for TabICLv2. The Validation
+ordering persisted on Test. Validation minus Test PR-AUC was 0.0187 for tuned
+XGBoost, 0.0099 for tuned CatBoost, 0.0141 for TabPFN-3, and 0.0127 for
+TabICLv2. On this fixed split, both pretrained models retained slightly higher
+Test PR-AUC than the tuned classical baselines; these single-split differences
+should not be interpreted as universal model-family superiority.
+
+Final foundation-model downstream timing excludes checkpoint downloads and
+external pretraining. TabPFN-3 required 0.79 seconds for downstream
+fit/context and 2.18 seconds for Test inference, with 388 MiB peak CUDA memory
+allocated. TabICLv2 required 0.50 seconds for downstream fit/context and 0.59
+seconds for Test inference, with 676 MiB allocated. These values are not
+end-to-end training costs: foundation-model external pretraining is not
+measured. Conversely, the classical timing distinguishes task-specific Optuna
+optimization (about 62 seconds for XGBoost and 6,381 seconds for CatBoost) from
+their much smaller final fit/inference costs.
+
+Machine-readable outputs are available in
+[`foundation_model_validation.csv`](docs/results/foundation_model_validation.csv),
+[`foundation_model_test.csv`](docs/results/foundation_model_test.csv), and
+[`model_family_comparison.csv`](docs/results/model_family_comparison.csv).
+
 ### FraudKiller vendor evaluation
 
 ![Vendor predictive and economic evaluation](docs/figures/vendor_evaluation.png)
@@ -285,4 +346,4 @@ Tests use synthetic data and cover Task 1 temporal aggregation, Task 2 stratific
 
 ## Future work
 
-Tabular foundation models and date-feature ablations may be evaluated in later iterations. They are not implemented in the current primary benchmark.
+Date-feature ablations, calibration, and ensemble experiments remain possible future work; they are outside the frozen benchmark reported here.
