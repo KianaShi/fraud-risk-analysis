@@ -1,5 +1,6 @@
 """Checkpoint-free tests for the Stage C Train -> Validation benchmark."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,7 @@ class FoundationModelTests(unittest.TestCase):
         values = np.arange(size)
         self.raw = pd.DataFrame(
             {
+                "id": [f"record-{value:03d}" for value in values],
                 "is_fraud": values % 2,
                 "ea_score": values.astype(float),
                 "identity_rank": values.astype(float),
@@ -207,6 +209,13 @@ class FoundationModelTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue(metadata.is_file())
             self.assertFalse(any("test" in path.name.lower() for path in root.iterdir()))
+            persisted = json.loads(metadata.read_text(encoding="utf-8"))
+            membership = persisted["split_membership"]
+            self.assertEqual(membership["identity_column"], "id")
+            self.assertEqual(len(membership["dataset_membership_sha256"]), 64)
+            self.assertEqual(len(membership["train_membership_sha256"]), 64)
+            self.assertEqual(len(membership["validation_membership_sha256"]), 64)
+            self.assertEqual(len(membership["test_membership_sha256"]), 64)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,23 @@ class ApplicationMetricsTests(unittest.TestCase):
         })
         self.assertTrue(clean_applications(raw).empty)
 
+    @staticmethod
+    def _single_application(final_decision) -> pd.DataFrame:
+        return pd.DataFrame({
+            "application_id": [1], "product": ["A"], "industry": ["I"],
+            "city": ["C"], "state": ["S"], "application_date": ["2019-01-02"],
+            "final_decision": [final_decision], "is_fraud": [0], "credit_score": [80],
+            "fraud_score": [0.1], "first_transaction_date": ["2019-01-03"],
+        })
+
+    def test_missing_final_decision_raises_controlled_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "final_decision.*count=1"):
+            clean_applications(self._single_application(None))
+
+    def test_unrecognized_final_decision_raises_controlled_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "final_decision.*count=1"):
+            clean_applications(self._single_application("PENDING_UNKNOWN"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from fraud_detection.common import to_snake_case
 from fraud_detection.production import EXPECTED_FEATURES, build_production_artifacts
 
 
@@ -27,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frozen-config", type=Path, default=root / "docs" / "results" / "best_hyperparameters.json")
     parser.add_argument("--model-output", type=Path, default=root / "artifacts" / "catboost_fraud_model.cbm")
     parser.add_argument("--preprocessor-output", type=Path, default=root / "artifacts" / "catboost_preprocessor.json")
+    parser.add_argument("--manifest-output", type=Path, default=root / "artifacts" / "catboost_artifact_manifest.json")
     parser.add_argument(
         "--confirm-development-only",
         action="store_true",
@@ -47,6 +49,12 @@ def main() -> None:
             "cannot determine whether an arbitrary CSV contains Test rows."
         )
     frame = pd.read_csv(args.input)
+    normalized_target = to_snake_case(args.target)
+    if normalized_target in EXPECTED_FEATURES:
+        raise ValueError(
+            f"Target {args.target!r} normalizes to predictive feature {normalized_target!r}; "
+            "the target must be separate from every predictive feature."
+        )
     if args.target not in frame:
         raise ValueError(f"Missing target column: {args.target}")
     unexpected = sorted(set(frame.columns) - set((*EXPECTED_FEATURES, args.target)))
@@ -58,6 +66,7 @@ def main() -> None:
         args.frozen_config,
         args.model_output,
         args.preprocessor_output,
+        args.manifest_output,
     )
     print(json.dumps(result, indent=2))
 

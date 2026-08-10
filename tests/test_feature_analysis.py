@@ -33,7 +33,8 @@ class FeatureAnalysisTests(unittest.TestCase):
             }
         )
         self.y = pd.Series(np.arange(size) % 2)
-        self.partitions = stratified_split(self.y)
+        stable_ids = pd.Series([f"id-{value}" for value in self.y.index], index=self.y.index)
+        self.partitions = stratified_split(self.y, stable_ids=stable_ids)
 
     def test_feature_audit_has_required_columns_and_uses_legitimate_features(self) -> None:
         audit = build_feature_audit(self.X.loc[self.partitions.train], self.y.loc[self.partitions.train], self.groups)

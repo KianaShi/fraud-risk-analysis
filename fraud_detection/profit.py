@@ -30,14 +30,29 @@ def apply_three_way_decision(probability: np.ndarray, decline_threshold: float, 
     """Assign decline, manual review, or approve from fraud probabilities."""
     if not 0 <= approve_threshold < decline_threshold <= 1:
         raise ValueError("Thresholds must satisfy 0 <= approve < decline <= 1.")
-    return np.where(probability >= decline_threshold, "decline", np.where(probability >= approve_threshold, "manual_review", "approve"))
+    scores = np.asarray(probability, dtype=float)
+    if scores.ndim != 1:
+        raise ValueError("Fraud probabilities must be one-dimensional.")
+    if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
+        raise ValueError("Fraud probabilities must be finite values within [0, 1].")
+    return np.where(scores >= decline_threshold, "decline", np.where(scores >= approve_threshold, "manual_review", "approve"))
 
 
 def compute_profit(y_true: np.ndarray, decisions: np.ndarray, vendor_called: bool, assumptions: ProfitAssumptions = ProfitAssumptions()) -> dict[str, float | int]:
     """Calculate expected profit and its revenue/cost breakdown."""
     target, decision = np.asarray(y_true), np.asarray(decisions)
+    if target.ndim != 1 or decision.ndim != 1:
+        raise ValueError("Targets and decisions must be one-dimensional.")
     if len(target) != len(decision):
         raise ValueError("Targets and decisions must have equal length.")
+    if not np.isin(target, [0, 1]).all():
+        raise ValueError("Targets must contain only binary 0/1 values.")
+    supported = np.array(["approve", "manual_review", "decline"])
+    if not np.isin(decision, supported).all():
+        raise ValueError(
+            "Decisions must contain only supported decision labels: "
+            "approve, manual_review, decline."
+        )
     fraud, clean = target == 1, target == 0
     approve, decline, review = decision == "approve", decision == "decline", decision == "manual_review"
     revenue = assumptions.monthly_revenue * assumptions.months * np.sum(approve & clean)
@@ -46,7 +61,10 @@ def compute_profit(y_true: np.ndarray, decisions: np.ndarray, vendor_called: boo
     fraud_loss += assumptions.fraud_loss * assumptions.manual_review_approval_rate * np.sum(review & fraud)
     review_cost = assumptions.manual_review_cost * np.sum(review)
     vendor_cost = assumptions.vendor_call_cost * len(target) if vendor_called else 0.0
-    return {"profit": float(revenue - fraud_loss - review_cost - vendor_cost), "revenue": float(revenue), "fraud_loss": float(fraud_loss), "manual_review_cost": float(review_cost), "vendor_cost": float(vendor_cost), "n_approve": int(approve.sum()), "n_manual_review": int(review.sum()), "n_decline": int(decline.sum())}
+    counts = (int(approve.sum()), int(review.sum()), int(decline.sum()))
+    if sum(counts) != len(target):
+        raise RuntimeError("Decision counts do not cover every input row.")
+    return {"profit": float(revenue - fraud_loss - review_cost - vendor_cost), "revenue": float(revenue), "fraud_loss": float(fraud_loss), "manual_review_cost": float(review_cost), "vendor_cost": float(vendor_cost), "n_approve": counts[0], "n_manual_review": counts[1], "n_decline": counts[2]}
 
 
 def compare_vendor_scenarios(raw: pd.DataFrame, decline_threshold: float = 0.8, approve_threshold: float = 0.2, random_state: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,33 @@ MODEL_NAME = "catboost_fraud_v1"
 RANDOM_SEED = 42
 BENCHMARK_THRESHOLD = 0.5
 EXPECTED_FEATURES = tuple(DEFAULT_FEATURES.all)
+FROZEN_CATBOOST_PARAMETERS = (
+    "iterations",
+    "depth",
+    "learning_rate",
+    "l2_leaf_reg",
+    "random_strength",
+    "bagging_temperature",
+)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _configuration_fingerprint(config: dict[str, Any]) -> str:
+    payload = {
+        "selected_configuration": config["selected_configuration"],
+        "selected_parameters": config["selected_parameters"],
+        "random_seed": int(config["optimization_seed"]),
+        "feature_names": list(EXPECTED_FEATURES),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def load_frozen_catboost_config(path: Path) -> dict[str, Any]:
@@ -66,6 +94,13 @@ def validate_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ordered[column] = converted
     if invalid_numeric:
         raise ValueError(f"Non-numeric values in numeric/boolean features: {invalid_numeric}")
+    nonfinite = {
+        column: int(np.isinf(ordered[column].to_numpy(dtype=float, na_value=np.nan)).sum())
+        for column in (*DEFAULT_FEATURES.numeric, *DEFAULT_FEATURES.boolean)
+        if np.isinf(ordered[column].to_numpy(dtype=float, na_value=np.nan)).any()
+    }
+    if nonfinite:
+        raise ValueError(f"Observed numeric/boolean feature values must be finite: {nonfinite}")
 
     invalid_boolean = {
         column: sorted(ordered.loc[ordered[column].notna() & ~ordered[column].isin([0, 1]), column].astype(str).unique().tolist())[:5]
@@ -133,11 +168,27 @@ class ProductionCatBoost:
         model_path: Path,
         preprocessor_path: Path,
         frozen_config_path: Path | None = None,
+        manifest_path: Path | None = None,
     ) -> "ProductionCatBoost":
         if not model_path.is_file():
             raise FileNotFoundError(f"CatBoost model artifact not found: {model_path}")
         if not preprocessor_path.is_file():
             raise FileNotFoundError(f"Preprocessor artifact not found: {preprocessor_path}")
+        if manifest_path is None:
+            manifest_path = model_path.parent / "catboost_artifact_manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Artifact manifest not found: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("model_identifier") != MODEL_NAME:
+            raise ValueError("Artifact manifest model identifier is invalid.")
+        if tuple(manifest.get("feature_names", ())) != EXPECTED_FEATURES:
+            raise ValueError("Artifact manifest feature schema differs from Fraud v1.0.")
+        if manifest.get("target_classes") != [0, 1]:
+            raise ValueError("Artifact manifest does not declare binary target classes [0, 1].")
+        expected_hashes = manifest.get("sha256", {})
+        for label, path in (("model", model_path), ("preprocessor", preprocessor_path)):
+            if expected_hashes.get(label) != _sha256_file(path):
+                raise ValueError(f"{label.title()} artifact SHA-256 does not match the manifest.")
         document = json.loads(preprocessor_path.read_text(encoding="utf-8"))
         configuration = document.get("frozen_configuration")
         if not isinstance(configuration, dict):
@@ -148,8 +199,36 @@ class ProductionCatBoost:
                 raise ValueError("Serialized model parameters differ from the frozen Phase 3 artifact.")
             if int(configuration.get("random_seed", -1)) != int(frozen["optimization_seed"]):
                 raise ValueError("Serialized model seed differs from the frozen Phase 3 artifact.")
+            if manifest.get("frozen_configuration_sha256") != _configuration_fingerprint(frozen):
+                raise ValueError("Artifact manifest differs from the frozen CatBoost configuration.")
+        else:
+            frozen = {
+                "selected_parameters": configuration.get("selected_parameters", {}),
+                "optimization_seed": configuration.get("random_seed"),
+            }
         model = CatBoostClassifier()
         model.load_model(str(model_path))
+        serialized_parameters = model.get_params()
+        actual_parameters = model.get_all_params()
+        for name in FROZEN_CATBOOST_PARAMETERS:
+            expected = frozen["selected_parameters"].get(name)
+            actual = serialized_parameters.get(name, actual_parameters.get(name))
+            if expected is None or actual is None or not np.isclose(
+                float(actual), float(expected), rtol=1e-6, atol=1e-9
+            ):
+                raise ValueError(
+                    f"Loaded CatBoost parameter {name!r} differs from the frozen configuration."
+                )
+        actual_seed = serialized_parameters.get(
+            "random_seed", actual_parameters.get("random_seed")
+        )
+        if actual_seed is None or int(actual_seed) != int(frozen["optimization_seed"]):
+            raise ValueError("Loaded CatBoost random seed differs from the frozen configuration.")
+        if list(model.feature_names_) != list(EXPECTED_FEATURES):
+            raise ValueError("Loaded CatBoost feature names/order differ from Fraud v1.0.")
+        classes = np.asarray(model.classes_).tolist()
+        if classes != [0, 1]:
+            raise ValueError(f"Loaded CatBoost classes are not binary [0, 1]: {classes}")
         return cls(
             model=model,
             preprocessor=_load_preprocessor(preprocessor_path),
@@ -178,12 +257,21 @@ def build_production_artifacts(
     frozen_config_path: Path,
     model_path: Path,
     preprocessor_path: Path,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Fit the frozen configuration on an explicitly supplied development set only."""
+    if not isinstance(target, pd.Series):
+        raise TypeError("Development labels must be a pandas Series with an aligned index.")
+    if len(development) != len(target) or not target.index.equals(development.index):
+        raise ValueError(
+            "Development label/index alignment is invalid; target.index must exactly equal features.index."
+        )
     features = validate_feature_frame(development)
     labels = pd.to_numeric(target, errors="raise")
-    if len(features) != len(labels) or not labels.isin([0, 1]).all():
-        raise ValueError("Development labels must align and contain only 0/1.")
+    if not labels.isin([0, 1]).all():
+        raise ValueError("Development labels must contain only 0/1.")
+    features = features.reset_index(drop=True)
+    labels = labels.reset_index(drop=True)
     frozen = load_frozen_catboost_config(frozen_config_path)
     preprocessor = CatBoostPreprocessor(DEFAULT_FEATURES).fit(features, labels)
     transformed = preprocessor.transform(features)
@@ -200,15 +288,38 @@ def build_production_artifacts(
     model.fit(transformed, labels)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     preprocessor_path.parent.mkdir(parents=True, exist_ok=True)
+    if manifest_path is None:
+        manifest_path = model_path.parent / "catboost_artifact_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(model_path), format="cbm")
     preprocessor_path.write_text(
         json.dumps(_preprocessor_document(preprocessor, frozen), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    manifest = {
+        "schema_version": 1,
+        "model_identifier": MODEL_NAME,
+        "model_format": "cbm",
+        "sha256": {
+            "model": _sha256_file(model_path),
+            "preprocessor": _sha256_file(preprocessor_path),
+        },
+        "frozen_configuration_source": "docs/results/best_hyperparameters.json",
+        "frozen_configuration_sha256": _configuration_fingerprint(frozen),
+        "selected_parameters": frozen["selected_parameters"],
+        "random_seed": int(frozen["optimization_seed"]),
+        "feature_names": list(EXPECTED_FEATURES),
+        "target_classes": [0, 1],
+        "catboost_version": importlib.metadata.version("catboost"),
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
     return {
         "model_identifier": MODEL_NAME,
         "model_path": str(model_path),
         "preprocessor_path": str(preprocessor_path),
+        "manifest_path": str(manifest_path),
         "training_rows": len(features),
         "training_data_scope": "caller-supplied frozen Train+Validation development partition; Test excluded",
         "random_seed": RANDOM_SEED,
@@ -285,6 +396,7 @@ def build_production_metadata(
             "deployment_ready": False,
             "model_path": "artifacts/catboost_fraud_model.cbm",
             "preprocessor_path": "artifacts/catboost_preprocessor.json",
+            "manifest_path": "artifacts/catboost_artifact_manifest.json",
             "build_input_attestation": (
                 "The build flag records the user's declaration that the supplied CSV excludes Test rows; "
                 "the code cannot verify split membership from an arbitrary CSV."

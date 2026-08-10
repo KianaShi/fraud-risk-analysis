@@ -20,6 +20,7 @@ from .modeling import (
     BenchmarkPartitions,
     FeatureGroups,
     candidate_models,
+    extract_stable_ids,
     prepare_model_data,
     probability_metrics,
     stratified_split,
@@ -339,7 +340,8 @@ def run_feature_investigation(
     results_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
     X, y, groups = prepare_model_data(raw)
-    partitions = stratified_split(y, random_state)
+    stable_ids = extract_stable_ids(raw, y.index)
+    partitions = stratified_split(y, random_state, stable_ids=stable_ids)
     train, validation = partitions.train, partitions.validation
 
     audit = build_feature_audit(X.loc[train], y.loc[train], groups)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .common import normalize_columns, require_columns, to_binary
+from .common import coerce_binary_series, normalize_columns, require_columns
 
 COLUMN_ALIASES = {
     "eascore": "ea_score", "identityrank": "identity_rank",
@@ -53,10 +53,10 @@ def clean_vendor_data(raw: pd.DataFrame) -> pd.DataFrame:
         frame["open_year"] = frame["open_date"].dt.year
         frame["open_month"] = frame["open_date"].dt.month
         frame["open_day_of_week"] = frame["open_date"].dt.dayofweek
-    frame["is_fraud"] = frame["is_fraud"].map(to_binary)
+    frame["is_fraud"] = coerce_binary_series(frame["is_fraud"], "is_fraud")
     for column in BOOLEAN_COLUMNS:
         if column in frame:
-            frame[column] = frame[column].map(to_binary)
+            frame[column] = coerce_binary_series(frame[column], column)
     for column in NUMERIC_COLUMNS:
         if column in frame:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")

@@ -5,13 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .common import normalize_columns, require_columns, to_binary
+from .common import coerce_binary_series, normalize_columns, require_columns
 
 APPLICATION_COLUMNS = (
     "application_id", "product", "industry", "city", "state",
     "application_date", "final_decision", "is_fraud", "credit_score",
     "fraud_score", "first_transaction_date",
 )
+FINAL_DECISIONS = frozenset({"APPROVED", "DECLINED"})
 
 
 def clean_applications(raw: pd.DataFrame) -> pd.DataFrame:
@@ -27,8 +28,21 @@ def clean_applications(raw: pd.DataFrame) -> pd.DataFrame:
     frame = frame.loc[:, APPLICATION_COLUMNS].copy()
     frame["application_date"] = pd.to_datetime(frame["application_date"], errors="coerce")
     frame["first_transaction_date"] = pd.to_datetime(frame["first_transaction_date"], errors="coerce")
-    frame["is_fraud"] = frame["is_fraud"].map(to_binary)
+    frame["is_fraud"] = coerce_binary_series(frame["is_fraud"], "is_fraud")
     frame["final_decision"] = frame["final_decision"].astype("string").str.strip().str.upper()
+    invalid_decision = frame["final_decision"].isna() | ~frame["final_decision"].isin(FINAL_DECISIONS)
+    if invalid_decision.any():
+        examples = (
+            frame.loc[invalid_decision, "final_decision"]
+            .astype("string")
+            .fillna("<MISSING>")
+            .unique()
+            .tolist()[:5]
+        )
+        raise ValueError(
+            "Column 'final_decision' contains missing or unrecognized values: "
+            f"count={int(invalid_decision.sum())}, examples={examples}"
+        )
     frame["is_approved"] = frame["final_decision"].eq("APPROVED").astype(int)
     frame = frame.dropna(subset=["application_id", "application_date", "is_fraud"])
     frame = frame.sort_values(["application_id", "application_date"]).drop_duplicates("application_id", keep="last")
