@@ -156,6 +156,13 @@ def _membership_sha256(stable_ids: pd.Series) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def stable_id_membership_sha256(stable_ids: pd.Series) -> str:
+    """Validate and hash a set of stable record identifiers."""
+    placeholder_target = pd.Series(0, index=stable_ids.index)
+    canonical = _validated_stable_ids(placeholder_target, stable_ids)
+    return _membership_sha256(canonical)
+
+
 def split_membership_fingerprints(
     stable_ids: pd.Series, partitions: BenchmarkPartitions
 ) -> dict[str, str]:

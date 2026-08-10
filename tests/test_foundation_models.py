@@ -1,6 +1,7 @@
 """Checkpoint-free tests for the Stage C Train -> Validation benchmark."""
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from fraud_detection.foundation_models import (
     MODEL_NAMES,
     TABICL_CHECKPOINT,
     TABPFN_CHECKPOINT,
+    _checkpoint_provenance,
     evaluate_foundation_models,
     prepare_stage_c_data,
     representation_audit,
@@ -63,7 +65,12 @@ class RecordingModel:
     def __init__(self, name):
         self.name = name
         self.model_path = "auto"
-        self.model_path_ = f"cache/{name}.ckpt"
+        checkpoint_name = TABPFN_CHECKPOINT if name == "tabpfn_3" else TABICL_CHECKPOINT
+        checkpoint_root = Path(tempfile.gettempdir()) / "fraud-risk-analysis-tests"
+        checkpoint_root.mkdir(exist_ok=True)
+        checkpoint = checkpoint_root / checkpoint_name
+        checkpoint.write_bytes(f"synthetic-{name}".encode())
+        self.model_path_ = str(checkpoint)
         self.fit_frames = []
         self.predict_frames = []
 
@@ -164,7 +171,7 @@ class FoundationModelTests(unittest.TestCase):
         _, builder = self._builders()
         with patch(
             "fraud_detection.foundation_models.package_versions",
-            return_value={"torch": "x", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
+            return_value={"torch": "2.12.1+cu130", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
         ):
             results, metadata = evaluate_foundation_models(
                 train,
@@ -181,6 +188,40 @@ class FoundationModelTests(unittest.TestCase):
         self.assertEqual(metadata["models"]["tabpfn_3"]["checkpoint"], TABPFN_CHECKPOINT)
         self.assertEqual(metadata["models"]["tabicl_v2"]["checkpoint"], TABICL_CHECKPOINT)
 
+    def test_stage_c_records_verified_checkpoint_provenance_without_absolute_paths(self):
+        train, y_train, validation, y_validation, groups = prepare_stage_c_data(self.raw)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            models, builder = self._builders()
+            expected = {}
+            for name, model in models.items():
+                checkpoint = root / (
+                    TABPFN_CHECKPOINT if name == "tabpfn_3" else TABICL_CHECKPOINT
+                )
+                checkpoint.write_bytes(f"synthetic-{name}".encode())
+                model.model_path_ = str(checkpoint)
+                expected[name] = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+            with patch(
+                "fraud_detection.foundation_models.package_versions",
+                return_value={"torch": "2.12.1+cu130", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
+            ):
+                _, metadata = evaluate_foundation_models(
+                    train, y_train, validation, y_validation, groups,
+                    model_builder=builder, torch_module=FakeTorch(),
+                )
+        for name in MODEL_NAMES:
+            provenance = metadata["models"][name]["checkpoint_provenance"]
+            self.assertEqual(provenance["checkpoint_sha256"], expected[name])
+            self.assertFalse(Path(provenance["checkpoint_filename"]).is_absolute())
+            self.assertNotIn("resolved_checkpoint_path", metadata["models"][name])
+
+    def test_stage_c_does_not_infer_an_auto_checkpoint_from_a_cache_location(self):
+        model = RecordingModel("tabpfn_3")
+        model.model_path = "auto"
+        model.model_path_ = None
+        with self.assertRaisesRegex(ValueError, "Could not resolve a local checkpoint"):
+            _checkpoint_provenance("tabpfn_3", model)
+
     def test_representation_audit_lists_frozen_feature_groups(self):
         train, _, validation, _, groups = prepare_stage_c_data(self.raw)
         audit = representation_audit(train, validation, groups)
@@ -194,7 +235,7 @@ class FoundationModelTests(unittest.TestCase):
         _, builder = self._builders()
         with tempfile.TemporaryDirectory() as directory, patch(
             "fraud_detection.foundation_models.package_versions",
-            return_value={"torch": "x", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
+            return_value={"torch": "2.12.1+cu130", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
         ):
             root = Path(directory)
             output = root / "foundation_model_validation.csv"

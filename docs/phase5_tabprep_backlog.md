@@ -18,14 +18,7 @@ Pinned source revisions:
 
 ## Local exploratory artifacts
 
-These machine-specific paths are intentionally outside Git and must not be copied or committed:
-
-| Local path | Purpose |
-|---|---|
-| `C:\Users\kiana\Documents\Codex\2026-08-06\woz\work\phase5_tabprep_upstream` | Verified TabPrep source checkout |
-| `C:\Users\kiana\Documents\Codex\2026-08-06\woz\work\phase5_autogluon_upstream` | Verified AutoGluon source checkout |
-| `C:\Users\kiana\Documents\Codex\2026-08-06\woz\work\phase5_tabprep_env` | Isolated Python environment |
-| `C:\Users\kiana\Documents\Codex\2026-08-06\woz\work\phase5_tabprep_smoke.py` | Synthetic-only smoke test |
+The verified TabPrep and AutoGluon source checkouts, isolated Python environment, and synthetic-only smoke script were local exploratory artifacts outside Git. Their workstation paths are intentionally not tracked. Reconstruct source identity from the pinned revisions above rather than relying on a private cache location.
 
 ## Not completed
 

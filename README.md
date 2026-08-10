@@ -17,7 +17,7 @@ Task 2 asks whether the available signals discriminate fraudulent merchants and 
 
 The original `FraudCaseStudy.xlsx` is excluded from Git. To reproduce the research workflows, place an authorized copy in the repository root or pass its path with `--input`.
 
-Task 2 uses a reproducible label-stratified split with `random_state=42`:
+The frozen historical Task 2 results use the recorded label-stratified 70/15/15 split with `random_state=42`:
 
 | Split | N | Fraud | Non-fraud | Fraud rate |
 |---|---:|---:|---:|---:|
@@ -26,6 +26,10 @@ Task 2 uses a reproducible label-stratified split with `random_state=42`:
 | Test | 417 | 202 | 215 | 48.44% |
 
 This intentionally selected, approximately balanced sample must not be interpreted as expected production fraud prevalence. Validation was used across several development stages and is not repeatedly independent confirmation. Test was used only for the frozen Phase 3/4 confirmations and was not reused for the deferred TabPrep work.
+
+The exact row membership of the original positional historical split was not preserved. The current code therefore uses the versioned `stable-id-stratified-70-15-15-v1` protocol and SHA-256 membership fingerprints for future/reproduction runs. That protocol is row-order invariant, but it must not be claimed to recreate the exact historical row assignment. Frozen historical metrics are unchanged.
+
+Throughout this repository, `pr_auc` means scikit-learn Average Precision (`average_precision_score`), not trapezoidal numerical area under a plotted precision-recall curve.
 
 The business meaning of `open_date` is not established by the case-study description. Raw and derived open-date fields are excluded from the primary benchmark.
 
@@ -62,7 +66,7 @@ Relevant artifacts include:
 
 ## Vendor value analysis
 
-The FraudKiller comparison uses fixed illustrative case-study assumptions for revenue, fraud loss, manual-review cost, vendor cost, and review approval rate. It is not a production profit forecast.
+The FraudKiller comparison is a separate exploratory decision-analysis protocol. It uses its own stratified 80/20 holdout and two depth-limited `DecisionTreeClassifier` pipelines (`max_depth=6`, `min_samples_leaf=20`) with and without vendor fields. This holdout is not the frozen Task 2 Test partition, and the profit numbers are not CatBoost or TabICLv2 Test-set economics. Its purpose is incremental vendor-signal and illustrative cost-benefit analysis under fixed case-study assumptions; it is not a production profit forecast.
 
 | Scenario | Holdout ROC-AUC | Holdout PR-AUC | Expected profit under case assumptions |
 |---|---:|---:|---:|
@@ -80,6 +84,8 @@ The exact selected parameters are stored in [`best_hyperparameters.json`](docs/r
 ## Tabular foundation-model benchmark
 
 TabPFN-3 and TabICLv2 received the same ordered, unencoded 14-feature information set. Both used frozen/default pretrained eight-estimator configurations with no task-specific HPO. Their configurations were frozen after Train-to-Validation evaluation and reloaded before the one-time Test confirmation.
+
+For new Stage C/D/E runs, Stage C requires explicit local checkpoint paths and records stable split membership, exact `torch`/package versions, checkpoint filename, and checkpoint SHA-256 without publishing the cache path. It does not infer checkpoint identity merely because a similarly named file exists in a default cache. Stage D schema 3 freezes those values, and Stage E requires explicit local checkpoint paths whose filename and digest match. Legacy Stage C/D artifacts remain readable historical evidence but lack the membership/checkpoint provenance needed to authorize a new Stage E. If any final Stage E output already exists, the ordinary command refuses before reading the real dataset or predicting; `--allow-test-reproduction` is a deliberate maintenance escape hatch and does not bypass freeze, membership, runtime, or checkpoint checks.
 
 The foundation-model results are meaningful research findings rather than automatic deployment recommendations.
 
@@ -102,7 +108,7 @@ All four models showed a modest Validation-to-Test PR-AUC decrease, on the order
 
 ### Threshold caveat
 
-Precision, recall, and F1 use a shared probability threshold of 0.5 for comparability. No model-specific threshold optimization or probability calibration was performed. Observed operating-point differences may partly reflect this shared, non-optimized threshold and must not be interpreted as each model's optimal business policy. PR-AUC and ROC-AUC are the cleaner threshold-independent discrimination comparisons here.
+Precision, recall, and F1 use a shared probability threshold of 0.5 for comparability. No model-specific threshold optimization or probability calibration was performed. Observed operating-point differences may partly reflect this shared, non-optimized threshold and must not be interpreted as each model's optimal business policy. Average Precision and ROC-AUC are the threshold-independent discrimination comparisons used here.
 
 ## Production-oriented CatBoost path
 
@@ -129,13 +135,29 @@ No policy thresholds are configured by default. Without both `review_threshold` 
 
 ### Serialized model status
 
-No reusable `.cbm` existed when this pass began, and the repository does not contain a saved Train+Validation membership artifact that would allow refitting without reconstructing the split from labels. To avoid touching Test labels again, this pass does not rebuild the model from the complete Task 2 file.
+The repository does not ship a reusable `.cbm`, and the exact historical Train+Validation membership was not preserved. The newer stable-ID protocol cannot be presented as retroactive proof of the historical row assignment. Consequently, the exact historical v1 production build input and `.cbm` cannot be recreated from tracked artifacts; the frozen research metrics remain unchanged.
 
-[`build_production_model.py`](build_production_model.py) instead requires an explicitly prepared development-only CSV containing the frozen Train+Validation rows and no Test rows. The caller must attest this with `--confirm-development-only`. This flag records the user's declaration only: the code cannot determine or prove that an arbitrary CSV has the correct split membership or excludes Test. Split membership must be verified independently before invoking the build. The script then loads the exact CatBoost parameters from the frozen JSON and writes:
+[`build_production_model.py`](build_production_model.py) supports future builds from an explicitly approved development-only CSV. It requires both `--confirm-development-only` and an external approved stable-ID membership manifest. The flag is only the user's declaration and is not proof of Test exclusion; the separate manifest supplies the row count and development-membership fingerprint that the code verifies. No approved historical-v1 manifest is shipped. The builder also requires the evidenced CatBoost 1.2.10 runtime, loads the exact frozen parameters, and writes:
+
+The externally governed manifest schema is:
+
+```json
+{
+  "schema_version": 1,
+  "split_protocol_version": "stable-id-stratified-70-15-15-v1",
+  "identity_column": "id",
+  "development_rows": 1234,
+  "development_membership_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dataset_reference": "approved-dataset-version"
+}
+```
+
+The values above are placeholders, not an approved manifest. The CSV must contain unique, non-missing stable IDs. Raw IDs need not be committed; an authorized process creates and approves the manifest from the future stable-ID split, and the build CLI verifies the supplied CSV against it.
 
 ```text
 artifacts/catboost_fraud_model.cbm
 artifacts/catboost_preprocessor.json
+artifacts/catboost_artifact_manifest.json
 ```
 
 Generated model binaries and preprocessing state are ignored by Git. The tracked metadata records that the artifact has not yet been built in-repository and that the current repository state is not deployment-ready.
@@ -181,7 +203,7 @@ Implemented:
 - frozen Phases 1–4 research documentation;
 - production-oriented CatBoost probability inference;
 - strict schema validation and deterministic config metadata;
-- reproducible development-only model build/loading path;
+- future development-only model build/loading path with approved-membership verification;
 - optional explicitly configured decision-policy interface;
 - unit tests and documented monitoring considerations; and
 - a deferred TabPrep backlog.
@@ -196,31 +218,34 @@ Not implemented:
 
 ## Reproduction
 
-Create and activate an environment, then install dependencies:
+Create an environment and explicitly use its interpreter. On Windows PowerShell:
 
-```bash
+```powershell
 python -m venv .venv
-python -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Run synthetic-data tests:
+On macOS/Linux:
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
 ```
+
+`requirements.txt` is the supported install declaration. [`constraints-frozen.txt`](constraints-frozen.txt) is historical pinned constraints/provenance, not a standalone or universal installation file. It records only exact versions supported by tracked Fraud v1.0 evidence: CatBoost 1.2.10, PyTorch 2.12.1+cu130, TabPFN 8.1.0, and TabICL 2.1.1. It is intentionally not a complete lockfile: the exact historical XGBoost, Python, scikit-learn, and remaining environment versions are unrecoverable and are not guessed. The CUDA-tagged PyTorch build may require the matching PyTorch package index and platform compatibility.
 
 Regenerate production metadata from frozen artifacts without fitting or scoring:
 
-```bash
-python generate_production_metadata.py
+```powershell
+.venv\Scripts\python.exe generate_production_metadata.py
 ```
 
-Build the native CatBoost artifact only from an independently verified Train+Validation CSV that excludes Test:
+Build a new native CatBoost artifact only from a user-attested development CSV containing stable `id`, the target, and the 14 features, together with an externally approved membership manifest:
 
-```bash
-python build_production_model.py \
-  --input <train_validation_only.csv> \
-  --confirm-development-only
+```powershell
+.venv\Scripts\python.exe build_production_model.py --input <train_validation_only.csv> --development-membership-manifest <approved_development_membership.json> --confirm-development-only
 ```
 
 Prediction requires all three bound production artifacts to exist first:
@@ -231,21 +256,18 @@ artifacts/catboost_preprocessor.json
 artifacts/catboost_artifact_manifest.json
 ```
 
-A fresh clone cannot run `predict_fraud.py` until `build_production_model.py` has been run with an independently verified development-only input, or equivalent approved artifacts have been supplied. Missing artifacts produce an explicit `FileNotFoundError`.
+A fresh clone cannot run `predict_fraud.py` until `build_production_model.py` has been run with an approved future-protocol development input and membership manifest, or equivalent approved artifacts have been supplied. Missing artifacts produce an explicit `FileNotFoundError`.
 
 After those artifacts exist, return probability only:
 
-```bash
-python predict_fraud.py --input <merchants.json>
+```powershell
+.venv\Scripts\python.exe predict_fraud.py --input <merchants.json>
 ```
 
 Optionally apply caller-supplied business thresholds:
 
-```bash
-python predict_fraud.py \
-  --input <merchants.csv> \
-  --review-threshold <business-supplied-value> \
-  --decline-threshold <business-supplied-value>
+```powershell
+.venv\Scripts\python.exe predict_fraud.py --input <merchants.csv> --review-threshold <business-supplied-value> --decline-threshold <business-supplied-value>
 ```
 
 These thresholds have no defaults and are not derived from production prevalence, cost optimization, or probability calibration.

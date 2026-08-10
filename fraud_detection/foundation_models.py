@@ -6,7 +6,6 @@ import gc
 import hashlib
 import importlib.metadata
 import json
-import os
 import time
 import warnings
 from collections.abc import Callable
@@ -33,6 +32,11 @@ RANDOM_STATE = 42
 TABPFN_CHECKPOINT = "tabpfn-v3-classifier-v3_default.ckpt"
 TABICL_CHECKPOINT = "tabicl-classifier-v2-20260212.ckpt"
 MODEL_NAMES = ("tabpfn_3", "tabicl_v2")
+FOUNDATION_RUNTIME = {
+    "torch": "2.12.1+cu130",
+    "tabpfn": "8.1.0",
+    "tabicl": "2.1.1",
+}
 
 
 def _target_and_identity(raw: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -68,7 +72,8 @@ def prepare_stage_c_data(
 ) -> tuple[Any, ...]:
     """Return only the frozen Train and Validation feature partitions.
 
-    The full label vector is required to reproduce the existing stratified split.
+    The full label and stable-ID vectors reproduce the current versioned split protocol,
+    not the unrecoverable exact row membership of the historical positional split.
     Feature cleaning is deliberately restricted to Train and Validation indices;
     no Test feature row is selected, cleaned, returned, fitted, or predicted.
     """
@@ -138,7 +143,11 @@ def package_versions() -> dict[str, str]:
     }
 
 
-def build_foundation_model(model_name: str, groups: FeatureGroups) -> Any:
+def build_foundation_model(
+    model_name: str,
+    groups: FeatureGroups,
+    checkpoint_path: Path | None = None,
+) -> Any:
     """Construct one official classifier while leaving inference defaults unchanged."""
     from tabicl import TabICLClassifier
     from tabpfn import TabPFNClassifier
@@ -146,13 +155,15 @@ def build_foundation_model(model_name: str, groups: FeatureGroups) -> Any:
     categorical_indices = [groups.all.index(column) for column in groups.categorical]
     if model_name == "tabpfn_3":
         return TabPFNClassifier(
-            model_path="auto",
+            model_path=checkpoint_path if checkpoint_path is not None else "auto",
             device="cuda",
             categorical_features_indices=categorical_indices,
             random_state=RANDOM_STATE,
         )
     if model_name == "tabicl_v2":
         return TabICLClassifier(
+            model_path=checkpoint_path,
+            allow_auto_download=checkpoint_path is None,
             checkpoint_version=TABICL_CHECKPOINT,
             device="cuda",
             random_state=RANDOM_STATE,
@@ -160,14 +171,45 @@ def build_foundation_model(model_name: str, groups: FeatureGroups) -> Any:
     raise ValueError(f"Unsupported Stage C model: {model_name}")
 
 
-def _checkpoint_path(model_name: str, model: Any) -> str:
-    if model_name == "tabicl_v2" and getattr(model, "model_path_", None):
-        return str(model.model_path_)
-    if model_name == "tabpfn_3":
-        candidate = Path(os.environ.get("APPDATA", "")) / "tabpfn" / TABPFN_CHECKPOINT
-        if candidate.is_file():
-            return str(candidate)
-    return str(getattr(model, "model_path", ""))
+def _checkpoint_path(model_name: str, model: Any) -> Path | None:
+    if getattr(model, "model_path_", None):
+        return Path(model.model_path_)
+    configured = getattr(model, "model_path", None)
+    if configured not in (None, "", "auto"):
+        return Path(configured)
+    return None
+
+
+def _checkpoint_provenance(model_name: str, model: Any) -> dict[str, Any]:
+    checkpoint_path = _checkpoint_path(model_name, model)
+    expected_filename = TABPFN_CHECKPOINT if model_name == "tabpfn_3" else TABICL_CHECKPOINT
+    if checkpoint_path is None or not checkpoint_path.is_file():
+        raise ValueError(f"Could not resolve a local checkpoint file for {model_name}.")
+    if checkpoint_path.name != expected_filename:
+        raise ValueError(
+            f"Resolved checkpoint filename for {model_name} is {checkpoint_path.name!r}, "
+            f"expected {expected_filename!r}."
+        )
+    digest = hashlib.sha256()
+    with checkpoint_path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    source_repository = None
+    source_revision = None
+    if model_name == "tabicl_v2":
+        parts = checkpoint_path.parts
+        if "snapshots" in parts:
+            snapshot_index = parts.index("snapshots")
+            if snapshot_index + 1 < len(parts):
+                source_revision = parts[snapshot_index + 1]
+        source_repository = "jingang/TabICL"
+    return {
+        "checkpoint_filename": expected_filename,
+        "checkpoint_sha256": digest.hexdigest(),
+        "source_repository": source_repository,
+        "source_revision_or_snapshot": source_revision,
+        "resolution": "verified local file after Stage C fit; absolute path not persisted",
+    }
 
 
 def _native_preprocessor(model_name: str, model: Any) -> str:
@@ -196,6 +238,7 @@ def evaluate_foundation_models(
     model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
     torch_module: Any | None = None,
     split_membership: dict[str, str] | None = None,
+    checkpoint_paths: dict[str, Path] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Fit on Train and evaluate only Validation using each native API."""
     if torch_module is None:
@@ -217,7 +260,16 @@ def evaluate_foundation_models(
             with warnings.catch_warnings(record=True) as records:
                 warnings.simplefilter("always")
                 constructor_started = time.perf_counter()
-                model = model_builder(model_name, groups)
+                if model_builder is build_foundation_model:
+                    if checkpoint_paths is None or set(checkpoint_paths) != set(MODEL_NAMES):
+                        raise ValueError(
+                            "Stage C requires explicit checkpoint paths for both foundation models."
+                        )
+                    model = model_builder(
+                        model_name, groups, checkpoint_path=checkpoint_paths[model_name]
+                    )
+                else:
+                    model = model_builder(model_name, groups)
                 torch_module.cuda.synchronize()
                 constructor_seconds = time.perf_counter() - constructor_started
                 # Constructors are intentionally lazy in both installed APIs. Their
@@ -278,7 +330,7 @@ def evaluate_foundation_models(
         model_metadata[model_name] = {
             "status": "passed",
             "checkpoint": checkpoint,
-            "resolved_checkpoint_path": _checkpoint_path(model_name, model),
+            "checkpoint_provenance": _checkpoint_provenance(model_name, model),
             "native_preprocessing": _native_preprocessor(model_name, model),
             "constructor_is_lazy": True,
             "cached_model_load_timing_scope": "included in fit_context_including_cached_load_seconds",
@@ -295,6 +347,7 @@ def evaluate_foundation_models(
         "random_state": RANDOM_STATE,
         "classification_threshold": 0.5,
         "primary_metric": "pr_auc",
+        "primary_metric_implementation": "sklearn.metrics.average_precision_score",
         "packages": package_versions(),
         "representation": audit,
         "models": model_metadata,
@@ -310,6 +363,7 @@ def run_stage_c(
     metadata_json: Path,
     model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
     torch_module: Any | None = None,
+    checkpoint_paths: dict[str, Path] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Run Stage C and write Validation-only artifacts."""
     train, y_train, validation, y_validation, groups, membership = prepare_stage_c_data(
@@ -324,6 +378,7 @@ def run_stage_c(
         model_builder=model_builder,
         torch_module=torch_module,
         split_membership=membership,
+        checkpoint_paths=checkpoint_paths,
     )
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     metadata_json.parent.mkdir(parents=True, exist_ok=True)

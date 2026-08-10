@@ -15,7 +15,7 @@ def run(input_path: Path, output_dir: Path, decline_threshold: float, approve_th
     comparison, scored = compare_vendor_scenarios(pd.read_csv(input_path), decline_threshold, approve_threshold)
     output_dir.mkdir(parents=True, exist_ok=True)
     comparison.round(4).to_csv(output_dir / "profit_scenario_comparison.csv", index=False)
-    scored.to_csv(output_dir / "scored_testset.csv", index=False)
+    scored.to_csv(output_dir / "scored_vendor_holdout.csv", index=False)
     print(comparison.round(4).to_string(index=False))
 
 

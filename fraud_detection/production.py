@@ -13,11 +13,18 @@ import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
 
-from .modeling import DEFAULT_FEATURES, CatBoostPreprocessor
+from .modeling import (
+    DEFAULT_FEATURES,
+    SPLIT_ID_COLUMN,
+    SPLIT_PROTOCOL_VERSION,
+    CatBoostPreprocessor,
+    stable_id_membership_sha256,
+)
 from .profit import apply_three_way_decision
 
 
 MODEL_NAME = "catboost_fraud_v1"
+REQUIRED_CATBOOST_VERSION = "1.2.10"
 RANDOM_SEED = 42
 BENCHMARK_THRESHOLD = 0.5
 EXPECTED_FEATURES = tuple(DEFAULT_FEATURES.all)
@@ -67,6 +74,36 @@ def load_frozen_catboost_config(path: Path) -> dict[str, Any]:
     if not isinstance(parameters, dict) or not parameters:
         raise ValueError("Frozen CatBoost parameters are missing.")
     return config
+
+
+def validate_development_membership(
+    frame: pd.DataFrame, manifest_path: Path
+) -> dict[str, Any]:
+    """Validate a development CSV against an externally approved ID-set manifest."""
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Development membership manifest not found: {manifest_path}")
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if document.get("schema_version") != 1:
+        raise ValueError("Development membership manifest schema_version must be 1.")
+    if document.get("split_protocol_version") != SPLIT_PROTOCOL_VERSION:
+        raise ValueError("Development membership manifest split protocol is invalid.")
+    if document.get("identity_column") != SPLIT_ID_COLUMN:
+        raise ValueError("Development membership manifest identity column must be 'id'.")
+    if SPLIT_ID_COLUMN not in frame:
+        raise ValueError("Development input must include stable identity column 'id'.")
+    actual_rows = len(frame)
+    actual_fingerprint = stable_id_membership_sha256(frame[SPLIT_ID_COLUMN])
+    if int(document.get("development_rows", -1)) != actual_rows:
+        raise ValueError("Input row count differs from the approved development membership.")
+    if document.get("development_membership_sha256") != actual_fingerprint:
+        raise ValueError("Input development membership fingerprint is not approved.")
+    return {
+        "manifest": str(manifest_path),
+        "development_rows": actual_rows,
+        "development_membership_sha256": actual_fingerprint,
+        "split_protocol_version": SPLIT_PROTOCOL_VERSION,
+        "dataset_reference": document.get("dataset_reference"),
+    }
 
 
 def validate_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -258,6 +295,7 @@ def build_production_artifacts(
     model_path: Path,
     preprocessor_path: Path,
     manifest_path: Path | None = None,
+    development_membership: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit the frozen configuration on an explicitly supplied development set only."""
     if not isinstance(target, pd.Series):
@@ -265,6 +303,12 @@ def build_production_artifacts(
     if len(development) != len(target) or not target.index.equals(development.index):
         raise ValueError(
             "Development label/index alignment is invalid; target.index must exactly equal features.index."
+        )
+    active_catboost_version = importlib.metadata.version("catboost")
+    if active_catboost_version != REQUIRED_CATBOOST_VERSION:
+        raise RuntimeError(
+            "CatBoost production artifacts require version "
+            f"{REQUIRED_CATBOOST_VERSION}; active version is {active_catboost_version}."
         )
     features = validate_feature_frame(development)
     labels = pd.to_numeric(target, errors="raise")
@@ -310,7 +354,7 @@ def build_production_artifacts(
         "random_seed": int(frozen["optimization_seed"]),
         "feature_names": list(EXPECTED_FEATURES),
         "target_classes": [0, 1],
-        "catboost_version": importlib.metadata.version("catboost"),
+        "catboost_version": active_catboost_version,
     }
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
@@ -321,7 +365,11 @@ def build_production_artifacts(
         "preprocessor_path": str(preprocessor_path),
         "manifest_path": str(manifest_path),
         "training_rows": len(features),
-        "training_data_scope": "caller-supplied frozen Train+Validation development partition; Test excluded",
+        "training_data_scope": (
+            "user-attested development-only input validated against a caller-supplied "
+            "approved membership manifest; the attestation flag alone does not prove Test exclusion"
+        ),
+        "development_membership_verification": development_membership,
         "random_seed": RANDOM_SEED,
         "feature_count": len(EXPECTED_FEATURES),
         "threshold_optimized": False,
@@ -386,20 +434,33 @@ def build_production_metadata(
             "categorical": list(DEFAULT_FEATURES.categorical),
         },
         "runtime": {
-            "catboost_version": importlib.metadata.version("catboost"),
+            "catboost_version": REQUIRED_CATBOOST_VERSION,
             "native_model_format": "cbm",
         },
         "training": {
-            "scope": "frozen Train+Validation development partition; Test excluded",
-            "artifact_status": "not built in repository; reproducible development-only build required",
+            "scope": (
+                "historical exact Train+Validation membership was not preserved; no Test-exclusion "
+                "claim can be independently verified for that historical build input"
+            ),
+            "artifact_status": (
+                "not built or shipped in repository; a future build requires user attestation "
+                "and an approved stable-ID development-membership manifest"
+            ),
             "production_artifact_built": False,
             "deployment_ready": False,
             "model_path": "artifacts/catboost_fraud_model.cbm",
             "preprocessor_path": "artifacts/catboost_preprocessor.json",
             "manifest_path": "artifacts/catboost_artifact_manifest.json",
+            "development_membership_manifest": "externally supplied; not available for historical v1",
             "build_input_attestation": (
-                "The build flag records the user's declaration that the supplied CSV excludes Test rows; "
-                "the code cannot verify split membership from an arbitrary CSV."
+                "--confirm-development-only records the user's declaration only and is not proof. "
+                "The separate approved membership manifest is what permits stable-ID fingerprint validation."
+            ),
+        },
+        "metric_definitions": {
+            "pr_auc_implementation": "sklearn.metrics.average_precision_score",
+            "pr_auc_note": (
+                "Repository pr_auc fields are Average Precision, not trapezoidal area under a plotted PR curve."
             ),
         },
         "threshold_policy": {

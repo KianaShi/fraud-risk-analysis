@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import shutil
 import tempfile
@@ -120,23 +121,85 @@ class ProductionTests(unittest.TestCase):
                 build.assert_not_called()
 
     def test_cli_accepts_separate_fraud_target(self) -> None:
-        frame = synthetic_features(8).assign(is_fraud=np.tile([0, 1], 4))
-        args = SimpleNamespace(
-            confirm_development_only=True,
-            input=Path("synthetic.csv"),
-            target="is_fraud",
-            frozen_config=FROZEN_CONFIG,
-            model_output=Path("model.cbm"),
-            preprocessor_output=Path("preprocessor.json"),
-            manifest_output=Path("manifest.json"),
+        frame = synthetic_features(8).assign(
+            id=[f"record-{value}" for value in range(8)],
+            is_fraud=np.tile([0, 1], 4),
         )
-        with patch.object(production_cli, "parse_args", return_value=args), patch.object(
-            production_cli.pd, "read_csv", return_value=frame
-        ), patch.object(
-            production_cli, "build_production_artifacts", return_value={}
-        ) as build:
-            production_cli.main()
+        values = sorted(frame["id"].tolist())
+        fingerprint = hashlib.sha256(
+            json.dumps(values, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            membership = Path(directory) / "membership.json"
+            membership.write_text(json.dumps({
+                "schema_version": 1,
+                "split_protocol_version": "stable-id-stratified-70-15-15-v1",
+                "identity_column": "id",
+                "development_rows": len(frame),
+                "development_membership_sha256": fingerprint,
+                "dataset_reference": "synthetic-test",
+            }), encoding="utf-8")
+            args = SimpleNamespace(
+                confirm_development_only=True,
+                input=Path("synthetic.csv"),
+                target="is_fraud",
+                development_membership_manifest=membership,
+                frozen_config=FROZEN_CONFIG,
+                model_output=Path("model.cbm"),
+                preprocessor_output=Path("preprocessor.json"),
+                manifest_output=Path("manifest.json"),
+            )
+            with patch.object(production_cli, "parse_args", return_value=args), patch.object(
+                production_cli.pd, "read_csv", return_value=frame
+            ), patch.object(
+                production_cli, "build_production_artifacts", return_value={}
+            ) as build:
+                production_cli.main()
         build.assert_called_once()
+        self.assertNotIn("id", build.call_args.args[0].columns)
+
+    def test_cli_rejects_unapproved_development_membership_before_fit(self) -> None:
+        frame = synthetic_features(8).assign(
+            id=[f"record-{value}" for value in range(8)],
+            is_fraud=np.tile([0, 1], 4),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            membership = Path(directory) / "membership.json"
+            membership.write_text(json.dumps({
+                "schema_version": 1,
+                "split_protocol_version": "stable-id-stratified-70-15-15-v1",
+                "identity_column": "id",
+                "development_rows": len(frame),
+                "development_membership_sha256": "0" * 64,
+                "dataset_reference": "synthetic-test",
+            }), encoding="utf-8")
+            args = SimpleNamespace(
+                confirm_development_only=True, input=Path("synthetic.csv"),
+                target="is_fraud", development_membership_manifest=membership,
+                frozen_config=FROZEN_CONFIG, model_output=Path("model.cbm"),
+                preprocessor_output=Path("preprocessor.json"),
+                manifest_output=Path("manifest.json"),
+            )
+            with patch.object(production_cli, "parse_args", return_value=args), patch.object(
+                production_cli.pd, "read_csv", return_value=frame
+            ), patch.object(production_cli, "build_production_artifacts") as build:
+                with self.assertRaisesRegex(ValueError, "development membership"):
+                    production_cli.main()
+            build.assert_not_called()
+
+    def test_production_build_rejects_wrong_catboost_runtime_before_fit(self) -> None:
+        features = synthetic_features(8)
+        target = pd.Series(np.tile([0, 1], 4), index=features.index)
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "fraud_detection.production.importlib.metadata.version", return_value="9.9.9"
+        ), patch("fraud_detection.production.CatBoostClassifier.fit") as fit:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "CatBoost.*1.2.10"):
+                build_production_artifacts(
+                    features, target, self._small_config(root), root / "model.cbm",
+                    root / "preprocessor.json", root / "manifest.json",
+                )
+        fit.assert_not_called()
 
     def test_native_model_round_trip_and_probability_bounds(self) -> None:
         features = synthetic_features()
@@ -243,7 +306,11 @@ class ProductionTests(unittest.TestCase):
             metadata["training"]["manifest_path"],
             "artifacts/catboost_artifact_manifest.json",
         )
-        self.assertIn("cannot verify split membership", metadata["training"]["build_input_attestation"])
+        self.assertIn("is not proof", metadata["training"]["build_input_attestation"])
+        self.assertEqual(
+            metadata["metric_definitions"]["pr_auc_implementation"],
+            "sklearn.metrics.average_precision_score",
+        )
 
 
 if __name__ == "__main__":
