@@ -262,26 +262,42 @@ def stage_e_output_reservation(
     """Hold an atomic filesystem reservation through Stage E evaluation and writes."""
     if not output_paths:
         raise ValueError("Stage E requires at least one final output path.")
-    lock_path = output_paths[0].parent / ".foundation-stage-e.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_paths = tuple(
+        parent / ".foundation-stage-e.lock"
+        for parent in sorted(
+            {Path(path).parent.resolve() for path in output_paths},
+            key=lambda path: os.path.normcase(str(path)),
+        )
+    )
+    acquired: list[tuple[Path, int]] = []
     try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as error:
-        raise RuntimeError(
-            f"Another Stage E run already owns the output reservation: {lock_path}"
-        ) from error
-    try:
-        os.write(descriptor, str(os.getpid()).encode("ascii"))
-        os.close(descriptor)
-        descriptor = None
+        for lock_path in lock_paths:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError as error:
+                try:
+                    recorded_pid = lock_path.read_text(encoding="ascii").strip() or "unavailable"
+                except OSError:
+                    recorded_pid = "unavailable"
+                raise RuntimeError(
+                    "Another Stage E run already owns the output reservation: "
+                    f"{lock_path} (recorded PID: {recorded_pid}). Confirm that no Stage E "
+                    "process corresponding to this lock is still running before removing it "
+                    "manually; stale locks are never removed automatically."
+                ) from error
+            acquired.append((lock_path, descriptor))
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
         ensure_stage_e_outputs_available(
             output_paths, allow_test_reproduction=allow_test_reproduction
         )
-        yield lock_path
+        yield tuple(path for path, unused_descriptor in acquired)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        lock_path.unlink(missing_ok=True)
+        for lock_path, descriptor in reversed(acquired):
+            try:
+                os.close(descriptor)
+            finally:
+                lock_path.unlink(missing_ok=True)
 
 
 def persist_freeze_artifact(

@@ -250,14 +250,23 @@ class ProductionTests(unittest.TestCase):
             model = root / "model.cbm"
             preprocessor = root / "preprocessor.json"
             manifest = root / "manifest.json"
-            result = self._build(
-                root,
-                features, target, config, model, preprocessor, manifest
-            )
+            development, membership, trust_anchor = self._approved_build_inputs(root, features)
+            with patch(
+                "fraud_detection.production.APPROVED_DEVELOPMENT_MANIFEST_DIGEST_PATH",
+                trust_anchor,
+            ):
+                result = build_production_artifacts(
+                    development, target, config, model, preprocessor, manifest,
+                    development_membership_manifest=membership,
+                )
+            approved_membership = json.loads(membership.read_text(encoding="utf-8"))
             artifact_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             verified = artifact_manifest["development_membership"]
             self.assertEqual(verified["verified_row_count"], len(features))
-            self.assertEqual(len(verified["verified_membership_sha256"]), 64)
+            self.assertEqual(
+                verified["verified_membership_sha256"],
+                approved_membership["development_membership_sha256"],
+            )
             self.assertEqual(result["development_membership_verification"], verified)
             scorer = ProductionCatBoost.load(model, preprocessor, config, manifest)
             probability = scorer.predict_proba(features)

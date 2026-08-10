@@ -1,6 +1,7 @@
 """Checkpoint-free tests for gated Stage D freezing and Stage E confirmation."""
 
 import json
+import os
 import tempfile
 import unittest
 from contextlib import nullcontext
@@ -342,31 +343,88 @@ class FoundationFinalizationTests(unittest.TestCase):
                 with verify_checkpoint_files(document, paths):
                     pass
 
-    def test_stage_e_reservation_is_exclusive_and_cleans_up(self):
+    def test_stage_e_reservation_spans_distinct_output_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            outputs = (root / "test.csv", root / "comparison.csv", root / "figure.png")
+            results = root / "results"
+            figures = root / "figures"
+            outputs = (results / "test.csv", results / "comparison.csv", figures / "figure.png")
             with stage_e_output_reservation(
                 outputs, allow_test_reproduction=False
-            ) as lock_path:
-                self.assertTrue(lock_path.is_file())
-                with self.assertRaisesRegex(RuntimeError, "already owns"):
-                    with stage_e_output_reservation(
-                        outputs, allow_test_reproduction=False
-                    ):
-                        pass
-            self.assertFalse(lock_path.exists())
+            ) as lock_paths:
+                expected = {
+                    results.resolve() / ".foundation-stage-e.lock",
+                    figures.resolve() / ".foundation-stage-e.lock",
+                }
+                self.assertEqual(set(lock_paths), expected)
+                self.assertEqual(
+                    list(lock_paths),
+                    sorted(
+                        lock_paths, key=lambda path: os.path.normcase(str(path))
+                    ),
+                )
+                self.assertTrue(all(path.is_file() for path in lock_paths))
+            self.assertTrue(all(not path.exists() for path in lock_paths))
 
-    def test_stage_e_reservation_cleans_up_after_exception(self):
+    def test_stage_e_reservations_conflict_on_shared_figures_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            outputs = (root / "test.csv", root / "comparison.csv", root / "figure.png")
-            lock_path = root / ".foundation-stage-e.lock"
+            figures = root / "shared-figures"
+            first = (root / "results-a" / "test.csv", figures / "figure.png")
+            second = (root / "results-b" / "test.csv", figures / "figure.png")
+            with stage_e_output_reservation(
+                first, allow_test_reproduction=False
+            ) as first_locks:
+                with self.assertRaisesRegex(RuntimeError, "already owns"):
+                    with stage_e_output_reservation(
+                        second, allow_test_reproduction=False
+                    ):
+                        pass
+                self.assertTrue(all(path.is_file() for path in first_locks))
+            self.assertTrue(all(not path.exists() for path in first_locks))
+
+    def test_stage_e_reservation_cleans_all_directories_after_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = (root / "results" / "test.csv", root / "figures" / "figure.png")
             with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
                 with stage_e_output_reservation(
                     outputs, allow_test_reproduction=True
-                ):
+                ) as lock_paths:
                     raise RuntimeError("synthetic failure")
+            self.assertTrue(all(not path.exists() for path in lock_paths))
+
+    def test_partial_acquisition_cleans_own_locks_and_preserves_existing_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            acquired_parent = root / "a-results"
+            blocked_parent = root / "z-figures"
+            blocked_parent.mkdir()
+            existing_lock = blocked_parent / ".foundation-stage-e.lock"
+            existing_lock.write_text("424242", encoding="ascii")
+            outputs = (acquired_parent / "test.csv", blocked_parent / "figure.png")
+            with self.assertRaisesRegex(
+                RuntimeError, "recorded PID: 424242.*removing it manually.*never removed"
+            ):
+                with stage_e_output_reservation(
+                    outputs, allow_test_reproduction=False
+                ):
+                    pass
+            self.assertFalse((acquired_parent / ".foundation-stage-e.lock").exists())
+            self.assertEqual(existing_lock.read_text(encoding="ascii"), "424242")
+
+    def test_pid_write_failure_closes_descriptor_and_removes_created_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / ".foundation-stage-e.lock"
+            with patch(
+                "fraud_detection.foundation_finalization.os.write",
+                side_effect=OSError("synthetic PID write failure"),
+            ), self.assertRaisesRegex(OSError, "synthetic PID write failure"):
+                with stage_e_output_reservation(
+                    (root / "test.csv",), allow_test_reproduction=False
+                ):
+                    pass
             self.assertFalse(lock_path.exists())
 
     def test_verified_snapshot_bytes_are_passed_to_model_builder(self):
