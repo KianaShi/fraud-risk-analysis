@@ -160,7 +160,7 @@ class ModelingTests(unittest.TestCase):
         """Fit both candidates on Train only, leaving Validation and Test untouched."""
         size = 100
         raw = self._full_raw(size)
-        _, target, groups = prepare_model_data(raw)
+        _, target, _ = prepare_model_data(raw)
         partitions = stratified_split(target, random_state=42, stable_ids=raw.loc[target.index, "id"])
 
         class RecordingModel:
