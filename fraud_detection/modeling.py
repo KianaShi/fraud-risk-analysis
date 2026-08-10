@@ -180,7 +180,7 @@ def split_membership_fingerprints(
 
 
 def split_audit(target: pd.Series, partitions: BenchmarkPartitions) -> pd.DataFrame:
-    """Summarize sample size, class counts, and PR-AUC prevalence baseline."""
+    """Summarize sample size, class counts, and the Average Precision prevalence baseline."""
     rows = []
     for name, index in (
         ("train", partitions.train),

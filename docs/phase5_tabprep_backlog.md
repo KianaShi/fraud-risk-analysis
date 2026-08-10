@@ -13,8 +13,8 @@ Phase 5 is deferred and is not part of the Fraud v1.0 Phases 1–4 reproduction 
 
 Pinned source revisions:
 
-- TabPrep: `fee7f189764070836b59e8cf29207050468589f0`
-- AutoGluon: `07786b4b7bf4349fb0d5c06701c00fb4ce09dab0`
+- TabPrep: `https://github.com/atschalz/tabprep@fee7f189764070836b59e8cf29207050468589f0`
+- AutoGluon: `https://github.com/autogluon/autogluon@07786b4b7bf4349fb0d5c06701c00fb4ce09dab0`
 
 ## Local exploratory artifacts
 

@@ -6,9 +6,12 @@ import gc
 import hashlib
 import importlib.metadata
 import json
+import shutil
+import tempfile
 import time
 import warnings
 from collections.abc import Callable
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,27 @@ FOUNDATION_RUNTIME = {
     "tabpfn": "8.1.0",
     "tabicl": "2.1.1",
 }
+
+
+@contextmanager
+def protected_checkpoint_snapshots(checkpoint_paths: dict[str, Path]):
+    """Yield private local copies whose bytes remain stable for model loading."""
+    if set(checkpoint_paths) != set(MODEL_NAMES):
+        raise ValueError("Explicit checkpoint paths are required for both foundation models.")
+    with tempfile.TemporaryDirectory(prefix="fraud-foundation-checkpoints-") as directory:
+        root = Path(directory)
+        snapshots: dict[str, Path] = {}
+        for model_name, source in checkpoint_paths.items():
+            source = Path(source)
+            expected = TABPFN_CHECKPOINT if model_name == "tabpfn_3" else TABICL_CHECKPOINT
+            if not source.is_file():
+                raise FileNotFoundError(f"Checkpoint file not found for {model_name}: {source}")
+            if source.name != expected:
+                raise ValueError(f"Checkpoint filename is invalid for {model_name}.")
+            snapshot = root / expected
+            shutil.copyfile(source, snapshot)
+            snapshots[model_name] = snapshot
+        yield snapshots
 
 
 def _target_and_identity(raw: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -180,7 +204,9 @@ def _checkpoint_path(model_name: str, model: Any) -> Path | None:
     return None
 
 
-def _checkpoint_provenance(model_name: str, model: Any) -> dict[str, Any]:
+def _checkpoint_provenance(
+    model_name: str, model: Any, source_checkpoint_path: Path | None = None
+) -> dict[str, Any]:
     checkpoint_path = _checkpoint_path(model_name, model)
     expected_filename = TABPFN_CHECKPOINT if model_name == "tabpfn_3" else TABICL_CHECKPOINT
     if checkpoint_path is None or not checkpoint_path.is_file():
@@ -197,7 +223,7 @@ def _checkpoint_provenance(model_name: str, model: Any) -> dict[str, Any]:
     source_repository = None
     source_revision = None
     if model_name == "tabicl_v2":
-        parts = checkpoint_path.parts
+        parts = (source_checkpoint_path or checkpoint_path).parts
         if "snapshots" in parts:
             snapshot_index = parts.index("snapshots")
             if snapshot_index + 1 < len(parts):
@@ -208,7 +234,7 @@ def _checkpoint_provenance(model_name: str, model: Any) -> dict[str, Any]:
         "checkpoint_sha256": digest.hexdigest(),
         "source_repository": source_repository,
         "source_revision_or_snapshot": source_revision,
-        "resolution": "verified local file after Stage C fit; absolute path not persisted",
+        "resolution": "protected local snapshot used for Stage C model loading; absolute path not persisted",
     }
 
 
@@ -235,10 +261,45 @@ def evaluate_foundation_models(
     validation: pd.DataFrame,
     y_validation: pd.Series,
     groups: FeatureGroups,
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
     split_membership: dict[str, str] | None = None,
     checkpoint_paths: dict[str, Path] | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Protect supplied checkpoints, then fit on Train and evaluate Validation."""
+    if model_builder is build_foundation_model and checkpoint_paths is None:
+        raise ValueError("Stage C requires explicit checkpoint paths for both foundation models.")
+    checkpoint_context = (
+        protected_checkpoint_snapshots(checkpoint_paths)
+        if checkpoint_paths is not None
+        else nullcontext({name: None for name in MODEL_NAMES})
+    )
+    with checkpoint_context as protected_paths:
+        return _evaluate_foundation_models_protected(
+            train,
+            y_train,
+            validation,
+            y_validation,
+            groups,
+            model_builder,
+            torch_module,
+            split_membership,
+            protected_paths,
+            checkpoint_paths or {},
+        )
+
+
+def _evaluate_foundation_models_protected(
+    train: pd.DataFrame,
+    y_train: pd.Series,
+    validation: pd.DataFrame,
+    y_validation: pd.Series,
+    groups: FeatureGroups,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any],
+    torch_module: Any | None,
+    split_membership: dict[str, str] | None,
+    protected_checkpoint_paths: dict[str, Path | None],
+    source_checkpoint_paths: dict[str, Path],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Fit on Train and evaluate only Validation using each native API."""
     if torch_module is None:
@@ -260,16 +321,9 @@ def evaluate_foundation_models(
             with warnings.catch_warnings(record=True) as records:
                 warnings.simplefilter("always")
                 constructor_started = time.perf_counter()
-                if model_builder is build_foundation_model:
-                    if checkpoint_paths is None or set(checkpoint_paths) != set(MODEL_NAMES):
-                        raise ValueError(
-                            "Stage C requires explicit checkpoint paths for both foundation models."
-                        )
-                    model = model_builder(
-                        model_name, groups, checkpoint_path=checkpoint_paths[model_name]
-                    )
-                else:
-                    model = model_builder(model_name, groups)
+                model = model_builder(
+                    model_name, groups, protected_checkpoint_paths[model_name]
+                )
                 torch_module.cuda.synchronize()
                 constructor_seconds = time.perf_counter() - constructor_started
                 # Constructors are intentionally lazy in both installed APIs. Their
@@ -330,7 +384,9 @@ def evaluate_foundation_models(
         model_metadata[model_name] = {
             "status": "passed",
             "checkpoint": checkpoint,
-            "checkpoint_provenance": _checkpoint_provenance(model_name, model),
+            "checkpoint_provenance": _checkpoint_provenance(
+                model_name, model, source_checkpoint_paths.get(model_name)
+            ),
             "native_preprocessing": _native_preprocessor(model_name, model),
             "constructor_is_lazy": True,
             "cached_model_load_timing_scope": "included in fit_context_including_cached_load_seconds",
@@ -361,7 +417,7 @@ def run_stage_c(
     raw: pd.DataFrame,
     output_csv: Path,
     metadata_json: Path,
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
     checkpoint_paths: dict[str, Path] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:

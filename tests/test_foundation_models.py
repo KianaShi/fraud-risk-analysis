@@ -16,6 +16,7 @@ from fraud_detection.foundation_models import (
     TABPFN_CHECKPOINT,
     _checkpoint_provenance,
     evaluate_foundation_models,
+    protected_checkpoint_snapshots,
     prepare_stage_c_data,
     representation_audit,
     run_stage_c,
@@ -116,7 +117,7 @@ class FoundationModelTests(unittest.TestCase):
 
     def _builders(self):
         models = {name: RecordingModel(name) for name in MODEL_NAMES}
-        return models, lambda name, groups: models[name]
+        return models, lambda name, groups, checkpoint_path=None: models[name]
 
     def test_test_features_are_not_selected_or_cleaned(self):
         target = pd.Series(self.raw["is_fraud"].to_numpy(), index=self.raw.index)
@@ -221,6 +222,24 @@ class FoundationModelTests(unittest.TestCase):
         model.model_path_ = None
         with self.assertRaisesRegex(ValueError, "Could not resolve a local checkpoint"):
             _checkpoint_provenance("tabpfn_3", model)
+
+    def test_protected_checkpoint_snapshot_is_immune_to_source_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "tabpfn_3": root / TABPFN_CHECKPOINT,
+                "tabicl_v2": root / TABICL_CHECKPOINT,
+            }
+            for name, path in sources.items():
+                path.write_bytes(f"approved-{name}".encode())
+            with protected_checkpoint_snapshots(sources) as snapshots:
+                self.assertNotEqual(snapshots["tabpfn_3"], sources["tabpfn_3"])
+                sources["tabpfn_3"].write_bytes(b"attacker replacement")
+                self.assertEqual(
+                    snapshots["tabpfn_3"].read_bytes(), b"approved-tabpfn_3"
+                )
+                snapshot_root = snapshots["tabpfn_3"].parent
+            self.assertFalse(snapshot_root.exists())
 
     def test_representation_audit_lists_frozen_feature_groups(self):
         train, _, validation, _, groups = prepare_stage_c_data(self.raw)

@@ -12,7 +12,6 @@ from fraud_detection.common import to_snake_case
 from fraud_detection.production import (
     EXPECTED_FEATURES,
     build_production_artifacts,
-    validate_development_membership,
 )
 
 
@@ -70,20 +69,17 @@ def main() -> None:
         )
     if args.target not in frame:
         raise ValueError(f"Missing target column: {args.target}")
-    membership = validate_development_membership(
-        frame, args.development_membership_manifest
-    )
     unexpected = sorted(set(frame.columns) - set((*EXPECTED_FEATURES, "id", args.target)))
     if unexpected:
         raise ValueError(f"Unexpected development columns: {unexpected}")
     result = build_production_artifacts(
-        frame.loc[:, EXPECTED_FEATURES],
+        frame.loc[:, ["id", *EXPECTED_FEATURES]],
         frame[args.target],
         args.frozen_config,
         args.model_output,
         args.preprocessor_output,
         args.manifest_output,
-        development_membership=membership,
+        development_membership_manifest=args.development_membership_manifest,
     )
     print(json.dumps(result, indent=2))
 

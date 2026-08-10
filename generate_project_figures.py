@@ -49,11 +49,11 @@ def generate_figures(outputs_dir: Path, figures_dir: Path, results_dir: Path) ->
     positions = range(len(models))
     figure, axis = plt.subplots(figsize=(9, 4.8))
     width = 0.36
-    axis.bar([position - width / 2 for position in positions], models["validation_pr_auc"], width, label="Validation PR-AUC", color=COLORS["blue"])
-    axis.bar([position + width / 2 for position in positions], models["test_pr_auc"], width, label="Test PR-AUC", color=COLORS["teal"])
+    axis.bar([position - width / 2 for position in positions], models["validation_pr_auc"], width, label="Validation Average Precision", color=COLORS["blue"])
+    axis.bar([position + width / 2 for position in positions], models["test_pr_auc"], width, label="Test Average Precision", color=COLORS["teal"])
     axis.set_xticks(list(positions), labels)
     axis.set_ylim(0.75, 1.0)
-    axis.set(title="Stratified Task 2 Model Performance", ylabel="PR-AUC")
+    axis.set(title="Stratified Task 2 Model Performance", ylabel="Average Precision")
     axis.legend(frameon=False)
     _save(figure, figures_dir / "model_comparison.png")
 

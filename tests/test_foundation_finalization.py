@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from fraud_detection.foundation_finalization import (
     persist_freeze_artifact,
     prepare_stage_e_data,
     run_stage_e,
+    stage_e_output_reservation,
     validate_freeze_document,
     verify_checkpoint_files,
 )
@@ -112,6 +114,11 @@ class FoundationFinalizationTests(unittest.TestCase):
         persist_freeze_artifact(validation, metadata, freeze)
         return freeze
 
+    def _write_document(self, root, document):
+        freeze = root / "synthetic-freeze.json"
+        freeze.write_text(json.dumps(document), encoding="utf-8")
+        return freeze
+
     def test_both_configs_are_frozen_and_reloaded_before_stage_e(self):
         with tempfile.TemporaryDirectory() as directory:
             freeze = self._persist(Path(directory))
@@ -140,7 +147,7 @@ class FoundationFinalizationTests(unittest.TestCase):
                 self.raw,
                 validation,
                 metadata,
-                model_builder=lambda name, unused: models[name],
+                model_builder=lambda name, unused, checkpoint_path=None: models[name],
                 torch_module=FakeTorch(),
             )
             persist_freeze_artifact(validation, metadata, freeze)
@@ -178,7 +185,7 @@ class FoundationFinalizationTests(unittest.TestCase):
                 y_test,
                 groups,
                 frozen,
-                model_builder=lambda name, unused: models[name],
+                model_builder=lambda name, unused, checkpoint_path=None: models[name],
                 torch_module=FakeTorch(),
             )
             self.assertEqual(results["classification_threshold"].unique().tolist(), [0.5])
@@ -288,7 +295,7 @@ class FoundationFinalizationTests(unittest.TestCase):
                 "fraud_detection.foundation_finalization.verify_foundation_runtime"
             ), patch(
                 "fraud_detection.foundation_finalization.verify_checkpoint_files",
-                return_value={},
+                return_value=nullcontext({}),
             ), patch(
                 "fraud_detection.foundation_finalization.pd.read_csv",
                 return_value=pd.DataFrame(),
@@ -332,7 +339,78 @@ class FoundationFinalizationTests(unittest.TestCase):
                 path.write_bytes(b"wrong checkpoint bytes")
                 paths[name] = path
             with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
-                verify_checkpoint_files(document, paths)
+                with verify_checkpoint_files(document, paths):
+                    pass
+
+    def test_stage_e_reservation_is_exclusive_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = (root / "test.csv", root / "comparison.csv", root / "figure.png")
+            with stage_e_output_reservation(
+                outputs, allow_test_reproduction=False
+            ) as lock_path:
+                self.assertTrue(lock_path.is_file())
+                with self.assertRaisesRegex(RuntimeError, "already owns"):
+                    with stage_e_output_reservation(
+                        outputs, allow_test_reproduction=False
+                    ):
+                        pass
+            self.assertFalse(lock_path.exists())
+
+    def test_stage_e_reservation_cleans_up_after_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = (root / "test.csv", root / "comparison.csv", root / "figure.png")
+            lock_path = root / ".foundation-stage-e.lock"
+            with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+                with stage_e_output_reservation(
+                    outputs, allow_test_reproduction=True
+                ):
+                    raise RuntimeError("synthetic failure")
+            self.assertFalse(lock_path.exists())
+
+    def test_verified_snapshot_bytes_are_passed_to_model_builder(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            approved = {}
+            for name in MODEL_NAMES:
+                payload = f"approved-{name}".encode()
+                provenance = document["models"][name]["checkpoint_provenance"]
+                path = root / provenance["checkpoint_filename"]
+                path.write_bytes(payload)
+                provenance["checkpoint_sha256"] = __import__("hashlib").sha256(payload).hexdigest()
+                paths[name] = path
+                approved[name] = payload
+            with verify_checkpoint_files(document, paths) as snapshots:
+                for path in paths.values():
+                    path.write_bytes(b"replaced after verification")
+                captured = {}
+
+                def builder(name, groups, checkpoint_path):
+                    del groups
+                    captured[name] = Path(checkpoint_path).read_bytes()
+                    model = RecordingModel(name)
+                    model.get_params = lambda deep=False, name=name: {
+                        "n_estimators": 8,
+                        "random_state": 42,
+                        "device": "cuda",
+                        "categorical_features_indices": [10, 11, 12, 13],
+                        "checkpoint_version": TABICL_CHECKPOINT,
+                    }
+                    return model
+
+                frozen = load_frozen_configs(self._write_document(root, document))
+                train_validation, y_train_validation, test, y_test, groups = prepare_stage_e_data(
+                    self.raw, frozen
+                )
+                evaluate_frozen_test_models(
+                    train_validation, y_train_validation, test, y_test, groups, frozen,
+                    model_builder=builder, torch_module=FakeTorch(),
+                    checkpoint_paths=snapshots,
+                )
+            self.assertEqual(captured, approved)
 
     def test_legacy_freeze_remains_loadable_but_cannot_authorize_stage_e(self):
         document = build_freeze_document(self.validation, self.metadata)

@@ -9,6 +9,7 @@ import os
 import time
 import warnings
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -31,6 +32,7 @@ from .foundation_models import (
     _target_and_identity,
     build_foundation_model,
     package_versions,
+    protected_checkpoint_snapshots,
 )
 from .modeling import (
     DEFAULT_FEATURES,
@@ -234,29 +236,52 @@ def verify_foundation_runtime(frozen: Mapping[str, Any]) -> None:
         )
 
 
+@contextmanager
 def verify_checkpoint_files(
     frozen: Mapping[str, Any], checkpoint_paths: Mapping[str, Path] | None
-) -> dict[str, Path]:
-    """Verify caller-supplied checkpoint files against frozen filename and SHA-256."""
+):
+    """Yield verified private snapshots that remain stable through model loading."""
     if checkpoint_paths is None or set(checkpoint_paths) != set(MODEL_NAMES):
         raise ValueError("Stage E requires explicit checkpoint paths for both frozen models.")
-    verified: dict[str, Path] = {}
-    for model_name in MODEL_NAMES:
-        path = Path(checkpoint_paths[model_name])
-        if not path.is_file():
-            raise FileNotFoundError(f"Checkpoint file not found for {model_name}: {path}")
-        provenance = frozen["models"][model_name]["checkpoint_provenance"]
-        if path.name != provenance["checkpoint_filename"]:
-            raise ValueError(f"Checkpoint filename differs from freeze for {model_name}.")
-        digest_builder = hashlib.sha256()
-        with path.open("rb") as source:
-            for block in iter(lambda: source.read(1024 * 1024), b""):
-                digest_builder.update(block)
-        digest = digest_builder.hexdigest()
-        if digest != provenance["checkpoint_sha256"]:
-            raise ValueError(f"Checkpoint SHA-256 differs from freeze for {model_name}.")
-        verified[model_name] = path
-    return verified
+    with protected_checkpoint_snapshots(dict(checkpoint_paths)) as snapshots:
+        for model_name, path in snapshots.items():
+            provenance = frozen["models"][model_name]["checkpoint_provenance"]
+            digest_builder = hashlib.sha256()
+            with path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest_builder.update(block)
+            if digest_builder.hexdigest() != provenance["checkpoint_sha256"]:
+                raise ValueError(f"Checkpoint SHA-256 differs from freeze for {model_name}.")
+        yield snapshots
+
+
+@contextmanager
+def stage_e_output_reservation(
+    output_paths: tuple[Path, ...], *, allow_test_reproduction: bool
+):
+    """Hold an atomic filesystem reservation through Stage E evaluation and writes."""
+    if not output_paths:
+        raise ValueError("Stage E requires at least one final output path.")
+    lock_path = output_paths[0].parent / ".foundation-stage-e.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as error:
+        raise RuntimeError(
+            f"Another Stage E run already owns the output reservation: {lock_path}"
+        ) from error
+    try:
+        os.write(descriptor, str(os.getpid()).encode("ascii"))
+        os.close(descriptor)
+        descriptor = None
+        ensure_stage_e_outputs_available(
+            output_paths, allow_test_reproduction=allow_test_reproduction
+        )
+        yield lock_path
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        lock_path.unlink(missing_ok=True)
 
 
 def persist_freeze_artifact(
@@ -341,7 +366,7 @@ def evaluate_frozen_test_models(
     y_test: pd.Series,
     groups: FeatureGroups,
     frozen: Mapping[str, Any],
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
     checkpoint_paths: Mapping[str, Path] | None = None,
 ) -> pd.DataFrame:
@@ -365,13 +390,11 @@ def evaluate_frozen_test_models(
             with warnings.catch_warnings(record=True) as records:
                 warnings.simplefilter("always")
                 started = time.perf_counter()
-                if model_builder is build_foundation_model:
-                    model = model_builder(
-                        model_name, groups,
-                        checkpoint_path=checkpoint_paths[model_name] if checkpoint_paths else None,
-                    )
-                else:
-                    model = model_builder(model_name, groups)
+                model = model_builder(
+                    model_name,
+                    groups,
+                    checkpoint_paths[model_name] if checkpoint_paths else None,
+                )
                 _verify_model_against_freeze(model_name, model, config)
                 torch_module.cuda.synchronize()
                 initialization_seconds = time.perf_counter() - started
@@ -471,7 +494,7 @@ def build_model_family_comparison(
 
 
 def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) -> None:
-    """Generate the single requested Validation/Test PR-AUC comparison figure."""
+    """Generate the requested Validation/Test Average Precision comparison figure."""
     plt.style.use("seaborn-v0_8-whitegrid")
     positions = np.arange(len(comparison))
     width = 0.36
@@ -480,21 +503,21 @@ def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) ->
         positions - width / 2,
         comparison["validation_pr_auc"],
         width,
-        label="Validation PR-AUC",
+        label="Validation Average Precision",
         color="#2F6B9A",
     )
     test = axis.bar(
         positions + width / 2,
         comparison["test_pr_auc"],
         width,
-        label="Test PR-AUC",
+        label="Test Average Precision",
         color="#2A9D8F",
     )
     axis.bar_label(validation, fmt="%.3f", padding=3, fontsize=9)
     axis.bar_label(test, fmt="%.3f", padding=3, fontsize=9)
     axis.set_xticks(positions, comparison["model"])
     axis.set_ylim(0.90, 0.99)
-    axis.set(title="Frozen Model Family Comparison", ylabel="PR-AUC")
+    axis.set(title="Frozen Model Family Comparison", ylabel="Average Precision")
     axis.legend(frameon=False)
     figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -502,7 +525,7 @@ def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) ->
     plt.close(figure)
 
 
-def run_stage_e(
+def _run_stage_e_reserved(
     raw: pd.DataFrame,
     freeze_json: Path,
     foundation_validation_csv: Path,
@@ -511,31 +534,26 @@ def run_stage_e(
     foundation_test_csv: Path,
     comparison_csv: Path,
     figure_path: Path,
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
     checkpoint_paths: Mapping[str, Path] | None = None,
-    allow_test_reproduction: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the gated one-time Stage E confirmation and final comparisons."""
-    ensure_stage_e_outputs_available(
-        (foundation_test_csv, comparison_csv, figure_path),
-        allow_test_reproduction=allow_test_reproduction,
-    )
+    """Run Stage E while the caller holds the output reservation."""
     frozen = load_frozen_configs(freeze_json)
     train_validation, y_train_validation, test, y_test, groups = prepare_stage_e_data(raw, frozen)
     verify_foundation_runtime(frozen)
-    verified_checkpoints = verify_checkpoint_files(frozen, checkpoint_paths)
-    test_results = evaluate_frozen_test_models(
-        train_validation,
-        y_train_validation,
-        test,
-        y_test,
-        groups,
-        frozen,
-        model_builder=model_builder,
-        torch_module=torch_module,
-        checkpoint_paths=verified_checkpoints,
-    )
+    with verify_checkpoint_files(frozen, checkpoint_paths) as verified_checkpoints:
+        test_results = evaluate_frozen_test_models(
+            train_validation,
+            y_train_validation,
+            test,
+            y_test,
+            groups,
+            frozen,
+            model_builder=model_builder,
+            torch_module=torch_module,
+            checkpoint_paths=verified_checkpoints,
+        )
     foundation_test_csv.parent.mkdir(parents=True, exist_ok=True)
     test_results.to_csv(foundation_test_csv, index=False)
     if not test_results["status"].eq("passed").all():
@@ -549,3 +567,37 @@ def run_stage_e(
     comparison.to_csv(comparison_csv, index=False)
     generate_model_family_figure(comparison, figure_path)
     return test_results, comparison
+
+
+def run_stage_e(
+    raw: pd.DataFrame,
+    freeze_json: Path,
+    foundation_validation_csv: Path,
+    classical_validation_csv: Path,
+    classical_test_csv: Path,
+    foundation_test_csv: Path,
+    comparison_csv: Path,
+    figure_path: Path,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
+    torch_module: Any | None = None,
+    checkpoint_paths: Mapping[str, Path] | None = None,
+    allow_test_reproduction: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reserve outputs atomically, then run the gated Stage E critical section."""
+    outputs = (foundation_test_csv, comparison_csv, figure_path)
+    with stage_e_output_reservation(
+        outputs, allow_test_reproduction=allow_test_reproduction
+    ):
+        return _run_stage_e_reserved(
+            raw,
+            freeze_json,
+            foundation_validation_csv,
+            classical_validation_csv,
+            classical_test_csv,
+            foundation_test_csv,
+            comparison_csv,
+            figure_path,
+            model_builder=model_builder,
+            torch_module=torch_module,
+            checkpoint_paths=checkpoint_paths,
+        )

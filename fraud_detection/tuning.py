@@ -48,7 +48,7 @@ MODEL_NAMES = ("xgboost", "catboost")
 
 @dataclass(frozen=True)
 class CVResult:
-    """Cross-validation PR-AUC summary."""
+    """Cross-validation Average Precision summary."""
 
     mean_pr_auc: float
     std_pr_auc: float
@@ -196,7 +196,7 @@ def cross_validated_pr_auc(
     cv_seed: int = CV_SEED,
     model_seed: int = OPTIMIZATION_SEED,
 ) -> CVResult:
-    """Evaluate PR-AUC using stratified folds created strictly inside Train."""
+    """Evaluate Average Precision using stratified folds created strictly inside Train."""
     splitter = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=cv_seed)
     scores: list[float] = []
     for fold_train, fold_validation in splitter.split(X_train, y_train):
@@ -218,7 +218,7 @@ def optimize_model(
     cv_seed: int = CV_SEED,
     cv_folds: int = CV_FOLDS,
 ) -> OptimizationResult:
-    """Maximize mean Train-only CV PR-AUC with a seeded TPE sampler."""
+    """Maximize mean Train-only CV Average Precision with a seeded TPE sampler."""
     optuna_module = _require_optuna()
     if n_trials < 1:
         raise ValueError("n_trials must be at least 1.")
@@ -277,7 +277,7 @@ def _evaluate_validation(
 
 
 def assess_improvement(delta: float) -> str:
-    """Describe a Validation PR-AUC change without overstating small gains."""
+    """Describe a Validation Average Precision change without overstating small gains."""
     if delta < 0:
         return "negative"
     if delta < 0.001:
@@ -298,7 +298,7 @@ def freeze_configuration(
     cv_seed: int,
     cv_folds: int,
 ) -> FrozenConfiguration:
-    """Select solely by fixed Validation PR-AUC and freeze before Test."""
+    """Select solely by fixed Validation Average Precision and freeze before Test."""
     delta = float(tuned_metrics["pr_auc"] - default_metrics["pr_auc"])
     use_tuned = delta > 0
     selected_cv = optimization.cv_result if use_tuned else default_cv
@@ -342,7 +342,7 @@ def _plot_optimization_history(trials: pd.DataFrame, output_path: Path) -> None:
         values = pd.to_numeric(subset["cv_mean_pr_auc"], errors="coerce")
         axis.plot(subset["trial_number"], values, marker="o", alpha=0.45, label="Trial")
         axis.plot(subset["trial_number"], values.cummax(), linewidth=2, label="Best so far")
-        axis.set(title=model_name.title(), xlabel="Trial", ylabel="Train-CV PR-AUC")
+        axis.set(title=model_name.title(), xlabel="Trial", ylabel="Train-CV Average Precision")
         axis.grid(alpha=0.2)
         axis.legend()
     figure.suptitle("Optuna Optimization History (Train-only 5-fold CV)")

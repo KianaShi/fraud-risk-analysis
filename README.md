@@ -68,7 +68,7 @@ Relevant artifacts include:
 
 The FraudKiller comparison is a separate exploratory decision-analysis protocol. It uses its own stratified 80/20 holdout and two depth-limited `DecisionTreeClassifier` pipelines (`max_depth=6`, `min_samples_leaf=20`) with and without vendor fields. This holdout is not the frozen Task 2 Test partition, and the profit numbers are not CatBoost or TabICLv2 Test-set economics. Its purpose is incremental vendor-signal and illustrative cost-benefit analysis under fixed case-study assumptions; it is not a production profit forecast.
 
-| Scenario | Holdout ROC-AUC | Holdout PR-AUC | Expected profit under case assumptions |
+| Scenario | Holdout ROC-AUC | Holdout Average Precision | Expected profit under case assumptions |
 |---|---:|---:|---:|
 | Without FraudKiller | 0.8829 | 0.8520 | $53,520.00 |
 | With FraudKiller | 0.9443 | 0.9506 | $95,010.50 |
@@ -91,20 +91,20 @@ The foundation-model results are meaningful research findings rather than automa
 
 ## Final model-family conclusion
 
-| Model | Validation PR-AUC | Test PR-AUC | Test ROC-AUC | Test F1 at 0.5 |
+| Model | Validation Average Precision | Test Average Precision | Test ROC-AUC | Test F1 at 0.5 |
 |---|---:|---:|---:|---:|
 | Tuned XGBoost | 0.9670 | 0.9483 | 0.9382 | 0.8698 |
 | Tuned CatBoost | 0.9623 | 0.9524 | 0.9457 | 0.8756 |
 | TabPFN-3 | 0.9695 | 0.9555 | 0.9466 | 0.9063 |
 | **TabICLv2** | **0.9719** | **0.9593** | **0.9509** | **0.9115** |
 
-**Best research benchmark:** TabICLv2. On this fixed benchmark, tuning-free TabICLv2 achieved the strongest held-out PR-AUC and ROC-AUC, slightly outperforming the tuned boosting baselines. This does not establish that TabICL is universally better than boosting or that it will generalize identically elsewhere.
+**Best research benchmark:** TabICLv2. On this fixed benchmark, tuning-free TabICLv2 achieved the strongest held-out Average Precision and ROC-AUC, slightly outperforming the tuned boosting baselines. This does not establish that TabICL is universally better than boosting or that it will generalize identically elsewhere.
 
 **Production-oriented candidate:** tuned CatBoost. Benchmark ranking alone was not treated as a deployment decision. CatBoost retains competitive discrimination, native categorical handling, mature feature-importance/SHAP tooling, low measured inference latency in this experiment, and a simpler operational footprint than the local foundation-model stack. CatBoost was not the highest-scoring model and is not presented as a proven production winner, the cheapest model, or the optimal deployment model.
 
 The foundation models achieved slightly stronger discrimination, but those gains alone cannot determine whether their additional operational requirements justify replacing a simpler boosting candidate.
 
-All four models showed a modest Validation-to-Test PR-AUC decrease, on the order of roughly 0.01–0.02 on this split. Exact differences are preserved in [`production_model_metadata.json`](docs/results/production_model_metadata.json). They are descriptive gaps, not formal statistical evidence of overfitting.
+All four models showed a modest Validation-to-Test Average Precision decrease, on the order of roughly 0.01–0.02 on this split. Exact differences are preserved in [`production_model_metadata.json`](docs/results/production_model_metadata.json). They are descriptive gaps, not formal statistical evidence of overfitting.
 
 ### Threshold caveat
 
@@ -234,7 +234,17 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-`requirements.txt` is the supported install declaration. [`constraints-frozen.txt`](constraints-frozen.txt) is historical pinned constraints/provenance, not a standalone or universal installation file. It records only exact versions supported by tracked Fraud v1.0 evidence: CatBoost 1.2.10, PyTorch 2.12.1+cu130, TabPFN 8.1.0, and TabICL 2.1.1. It is intentionally not a complete lockfile: the exact historical XGBoost, Python, scikit-learn, and remaining environment versions are unrecoverable and are not guessed. The CUDA-tagged PyTorch build may require the matching PyTorch package index and platform compatibility.
+`requirements.txt` is the supported test/production-candidate install declaration and pins the guarded CatBoost runtime to 1.2.10. [`constraints-frozen.txt`](constraints-frozen.txt) is historical pinned constraints/provenance, not a standalone or universal installation file. It records only exact versions supported by tracked Fraud v1.0 evidence: CatBoost 1.2.10, PyTorch 2.12.1+cu130, TabPFN 8.1.0, and TabICL 2.1.1. It is intentionally not a complete lockfile: the exact historical XGBoost, Python, scikit-learn, and remaining environment versions are unrecoverable and are not guessed.
+
+The exact guarded foundation runtime is a separate installation path. On a compatible Windows/CUDA platform, install from the matching official PyTorch CUDA 13.0 index, then verify CUDA before running Stage C/D/E:
+
+```powershell
+.venv\Scripts\python.exe -m pip install --extra-index-url https://download.pytorch.org/whl/cu130 -r requirements.txt torch==2.12.1+cu130
+.venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
+.venv\Scripts\python.exe -m pip check
+```
+
+This exact path requires a platform supported by that CUDA-tagged PyTorch build and an NVIDIA driver compatible with CUDA 13.0. Generic `requirements.txt` installation alone does not assert the exact foundation runtime; Stage D/E also enforce TabPFN 8.1.0 and TabICL 2.1.1 at runtime.
 
 Regenerate production metadata from frozen artifacts without fitting or scoring:
 
@@ -245,8 +255,10 @@ Regenerate production metadata from frozen artifacts without fitting or scoring:
 Build a new native CatBoost artifact only from a user-attested development CSV containing stable `id`, the target, and the 14 features, together with an externally approved membership manifest:
 
 ```powershell
-.venv\Scripts\python.exe build_production_model.py --input <train_validation_only.csv> --development-membership-manifest <approved_development_membership.json> --confirm-development-only
+.venv\Scripts\python.exe build_production_model.py --input <approved_development.csv> --development-membership-manifest <approved_development_membership.json> --confirm-development-only
 ```
+
+The builder authenticates that manifest against the SHA-256 stored in the repository-controlled `docs/config/approved_development_manifest.sha256`, then validates its schema, split protocol, identity column, row count, and stable-ID membership fingerprint inside `build_production_artifacts`. Fraud v1.0 does not ship that trust-anchor file because no historical exact Train+Validation membership is recoverable. Until a future development manifest is independently approved and its digest is released there, production artifact construction intentionally fails closed.
 
 Prediction requires all three bound production artifacts to exist first:
 
