@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -20,6 +23,7 @@ from fraud_detection.production import (
     load_frozen_catboost_config,
     validate_feature_frame,
 )
+import build_production_model as production_cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +54,20 @@ def synthetic_features(rows: int = 40) -> pd.DataFrame:
 
 
 class ProductionTests(unittest.TestCase):
+    def _small_config(self, root: Path, *, depth: int = 3) -> Path:
+        base = json.loads(FROZEN_CONFIG.read_text(encoding="utf-8"))
+        base["models"]["catboost"]["selected_parameters"] = {
+            "iterations": 8,
+            "depth": depth,
+            "learning_rate": 0.1,
+            "l2_leaf_reg": 3.0,
+            "random_strength": 0.0,
+            "bagging_temperature": 0.0,
+        }
+        path = root / f"frozen-depth-{depth}.json"
+        path.write_text(json.dumps(base), encoding="utf-8")
+        return path
+
     def test_production_config_matches_frozen_catboost(self) -> None:
         frozen = load_frozen_catboost_config(FROZEN_CONFIG)
         source = json.loads(FROZEN_CONFIG.read_text(encoding="utf-8"))["models"]["catboost"]
@@ -72,26 +90,67 @@ class ProductionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Boolean features"):
             validate_feature_frame(invalid)
 
+    def test_schema_rejects_positive_and_negative_infinity(self) -> None:
+        for value in (np.inf, -np.inf):
+            with self.subTest(value=value):
+                frame = synthetic_features(4)
+                frame.loc[0, "ea_score"] = value
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    validate_feature_frame(frame)
+
+    def test_cli_rejects_target_feature_overlap_before_fit(self) -> None:
+        frame = synthetic_features(8)
+        for target_name in ("is_valid", "ea_score"):
+            args = SimpleNamespace(
+                confirm_development_only=True,
+                input=Path("synthetic.csv"),
+                target=target_name,
+                frozen_config=FROZEN_CONFIG,
+                model_output=Path("model.cbm"),
+                preprocessor_output=Path("preprocessor.json"),
+                manifest_output=Path("manifest.json"),
+            )
+            with self.subTest(target=target_name), patch.object(
+                production_cli, "parse_args", return_value=args
+            ), patch.object(production_cli.pd, "read_csv", return_value=frame), patch.object(
+                production_cli, "build_production_artifacts"
+            ) as build:
+                with self.assertRaisesRegex(ValueError, f"{target_name}.*predictive feature"):
+                    production_cli.main()
+                build.assert_not_called()
+
+    def test_cli_accepts_separate_fraud_target(self) -> None:
+        frame = synthetic_features(8).assign(is_fraud=np.tile([0, 1], 4))
+        args = SimpleNamespace(
+            confirm_development_only=True,
+            input=Path("synthetic.csv"),
+            target="is_fraud",
+            frozen_config=FROZEN_CONFIG,
+            model_output=Path("model.cbm"),
+            preprocessor_output=Path("preprocessor.json"),
+            manifest_output=Path("manifest.json"),
+        )
+        with patch.object(production_cli, "parse_args", return_value=args), patch.object(
+            production_cli.pd, "read_csv", return_value=frame
+        ), patch.object(
+            production_cli, "build_production_artifacts", return_value={}
+        ) as build:
+            production_cli.main()
+        build.assert_called_once()
+
     def test_native_model_round_trip_and_probability_bounds(self) -> None:
         features = synthetic_features()
         target = pd.Series(np.tile([0, 1], len(features) // 2), index=features.index)
-        base = json.loads(FROZEN_CONFIG.read_text(encoding="utf-8"))
-        base["models"]["catboost"]["selected_parameters"] = {
-            "iterations": 8,
-            "depth": 3,
-            "learning_rate": 0.1,
-            "l2_leaf_reg": 3.0,
-            "random_strength": 0.0,
-            "bagging_temperature": 0.0,
-        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / "frozen.json"
+            config = self._small_config(root)
             model = root / "model.cbm"
             preprocessor = root / "preprocessor.json"
-            config.write_text(json.dumps(base), encoding="utf-8")
-            build_production_artifacts(features, target, config, model, preprocessor)
-            scorer = ProductionCatBoost.load(model, preprocessor, config)
+            manifest = root / "manifest.json"
+            build_production_artifacts(
+                features, target, config, model, preprocessor, manifest
+            )
+            scorer = ProductionCatBoost.load(model, preprocessor, config, manifest)
             probability = scorer.predict_proba(features)
             self.assertEqual(list(scorer.score(features).columns), ["fraud_probability"])
             tampered = json.loads(config.read_text(encoding="utf-8"))
@@ -99,9 +158,57 @@ class ProductionTests(unittest.TestCase):
             mismatched = root / "mismatched.json"
             mismatched.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "differ from the frozen"):
-                ProductionCatBoost.load(model, preprocessor, mismatched)
+                ProductionCatBoost.load(model, preprocessor, mismatched, manifest)
         self.assertEqual(probability.shape, (len(features),))
         self.assertTrue(np.all((probability >= 0) & (probability <= 1)))
+
+    def test_artifact_manifest_rejects_swapped_model_and_modified_preprocessor(self) -> None:
+        features = synthetic_features()
+        target = pd.Series(np.tile([0, 1], len(features) // 2), index=features.index)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._small_config(root, depth=3)
+            other_config = self._small_config(root, depth=5)
+            model = root / "model.cbm"
+            preprocessor = root / "preprocessor.json"
+            manifest = root / "manifest.json"
+            other_model = root / "other.cbm"
+            other_preprocessor = root / "other-preprocessor.json"
+            other_manifest = root / "other-manifest.json"
+            build_production_artifacts(
+                features, target, config, model, preprocessor, manifest
+            )
+            build_production_artifacts(
+                features, target, other_config, other_model, other_preprocessor, other_manifest
+            )
+            ProductionCatBoost.load(model, preprocessor, config, manifest)
+
+            original_model = model.read_bytes()
+            shutil.copyfile(other_model, model)
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                ProductionCatBoost.load(model, preprocessor, config, manifest)
+            model.write_bytes(original_model)
+
+            document = json.loads(preprocessor.read_text(encoding="utf-8"))
+            document["numeric_fill"]["ea_score"] += 1
+            preprocessor.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                ProductionCatBoost.load(model, preprocessor, config, manifest)
+
+    def test_production_build_rejects_misaligned_label_index(self) -> None:
+        features = synthetic_features(8)
+        labels = pd.Series(np.tile([0, 1], 4), index=features.index)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                self._small_config(root),
+                root / "model.cbm",
+                root / "preprocessor.json",
+            )
+            with self.assertRaisesRegex(ValueError, "label.*index alignment"):
+                build_production_artifacts(features, labels.iloc[::-1], *paths)
+            with self.assertRaisesRegex(ValueError, "label.*index alignment"):
+                build_production_artifacts(features, labels.iloc[:-1], *paths)
 
     def test_decision_policy_requires_explicit_valid_thresholds(self) -> None:
         signature = inspect.signature(apply_decision_policy)
@@ -132,6 +239,10 @@ class ProductionTests(unittest.TestCase):
         self.assertFalse(metadata["threshold_policy"]["model_specific_threshold_optimization_performed"])
         self.assertFalse(metadata["training"]["production_artifact_built"])
         self.assertFalse(metadata["training"]["deployment_ready"])
+        self.assertEqual(
+            metadata["training"]["manifest_path"],
+            "artifacts/catboost_artifact_manifest.json",
+        )
         self.assertIn("cannot verify split membership", metadata["training"]["build_input_attestation"])
 
 

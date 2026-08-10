@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--model", type=Path, default=root / "artifacts" / "catboost_fraud_model.cbm")
     parser.add_argument("--preprocessor", type=Path, default=root / "artifacts" / "catboost_preprocessor.json")
+    parser.add_argument("--manifest", type=Path, default=root / "artifacts" / "catboost_artifact_manifest.json")
     parser.add_argument(
         "--frozen-config",
         type=Path,
@@ -49,7 +50,9 @@ def main() -> None:
     supplied = (args.review_threshold is not None, args.decline_threshold is not None)
     if supplied[0] != supplied[1]:
         raise ValueError("Supply both review and decline thresholds, or neither.")
-    scorer = ProductionCatBoost.load(args.model, args.preprocessor, args.frozen_config)
+    scorer = ProductionCatBoost.load(
+        args.model, args.preprocessor, args.frozen_config, args.manifest
+    )
     result = scorer.score(_read_input(args.input))
     if all(supplied):
         result["decision"] = apply_decision_policy(

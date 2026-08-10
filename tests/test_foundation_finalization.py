@@ -17,7 +17,8 @@ from fraud_detection.foundation_finalization import (
     prepare_stage_e_data,
     validate_freeze_document,
 )
-from fraud_detection.foundation_models import MODEL_NAMES, prepare_stage_c_data
+from fraud_detection.foundation_models import MODEL_NAMES, prepare_stage_c_data, run_stage_c
+from fraud_detection.modeling import split_membership_fingerprints, stratified_split
 from tests.test_foundation_models import FakeTorch, RecordingModel
 import finalize_foundation_models as finalization_cli
 
@@ -27,6 +28,7 @@ class FoundationFinalizationTests(unittest.TestCase):
         size = 100
         values = pd.Series(range(size))
         self.raw = pd.DataFrame({
+            "id": values.map(lambda x: f"record-{x:03d}"),
             "is_fraud": values % 2,
             "ea_score": values.astype(float),
             "identity_rank": values.astype(float),
@@ -69,6 +71,12 @@ class FoundationFinalizationTests(unittest.TestCase):
                 for name in MODEL_NAMES
             },
         }
+        partitions = stratified_split(
+            self.raw["is_fraud"], stable_ids=self.raw["id"]
+        )
+        self.metadata["split_membership"] = split_membership_fingerprints(
+            self.raw["id"], partitions
+        )
 
     def _persist(self, root):
         validation = root / "validation.csv"
@@ -84,10 +92,36 @@ class FoundationFinalizationTests(unittest.TestCase):
             freeze = self._persist(Path(directory))
             reloaded = json.loads(freeze.read_text(encoding="utf-8"))
             validate_freeze_document(reloaded)
+            self.assertEqual(reloaded["schema_version"], 2)
+            self.assertEqual(
+                reloaded["split_membership"], self.metadata["split_membership"]
+            )
             self.assertEqual(
                 {config["configuration_status"] for config in reloaded["models"].values()},
                 {"frozen"},
             )
+
+    def test_normal_stage_c_to_d_to_e_membership_flow_succeeds(self):
+        models = {name: RecordingModel(name) for name in MODEL_NAMES}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "fraud_detection.foundation_models.package_versions",
+            return_value={"torch": "x", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
+        ):
+            root = Path(directory)
+            validation = root / "validation.csv"
+            metadata = root / "metadata.json"
+            freeze = root / "freeze.json"
+            run_stage_c(
+                self.raw,
+                validation,
+                metadata,
+                model_builder=lambda name, unused: models[name],
+                torch_module=FakeTorch(),
+            )
+            persist_freeze_artifact(validation, metadata, freeze)
+            prepared = prepare_stage_e_data(self.raw, load_frozen_configs(freeze))
+        self.assertEqual(len(prepared[0]), 85)
+        self.assertEqual(len(prepared[2]), 15)
 
     def test_loaded_frozen_configs_are_recursively_immutable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -133,6 +167,49 @@ class FoundationFinalizationTests(unittest.TestCase):
         document = build_freeze_document(self.validation, self.metadata)
         document["models"]["tabpfn_3"]["configuration_status"] = "candidate"
         with self.assertRaisesRegex(ValueError, "not frozen"):
+            prepare_stage_e_data(self.raw, document)
+
+    def test_stage_e_membership_is_invariant_to_row_reordering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frozen = load_frozen_configs(self._persist(Path(directory)))
+            original = prepare_stage_e_data(self.raw, frozen)
+            reordered = self.raw.sample(frac=1, random_state=19).reset_index(drop=True)
+            repeated = prepare_stage_e_data(reordered, frozen)
+        self.assertEqual(set(original[0]["ea_score"]), set(repeated[0]["ea_score"]))
+        self.assertEqual(set(original[2]["ea_score"]), set(repeated[2]["ea_score"]))
+
+    def test_changed_removed_or_additional_membership_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frozen = load_frozen_configs(self._persist(Path(directory)))
+            changed = self.raw.copy()
+            changed.loc[0, "id"] = "different-record"
+            removed = self.raw.iloc[:-1].copy()
+            additional = pd.concat([
+                self.raw,
+                self.raw.iloc[[-1]].assign(id="additional-record"),
+            ], ignore_index=True)
+            for name, frame in (
+                ("changed", changed),
+                ("removed", removed),
+                ("additional", additional),
+            ):
+                with self.subTest(case=name), self.assertRaisesRegex(
+                    ValueError, "membership fingerprint"
+                ):
+                    prepare_stage_e_data(frame, frozen)
+
+    def test_wrong_frozen_membership_is_rejected(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        document["split_membership"]["test_membership_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "membership fingerprint"):
+            prepare_stage_e_data(self.raw, document)
+
+    def test_legacy_freeze_remains_loadable_but_cannot_authorize_stage_e(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        document["schema_version"] = 1
+        del document["split_membership"]
+        validate_freeze_document(document)
+        with self.assertRaisesRegex(ValueError, "[Ll]egacy.*membership"):
             prepare_stage_e_data(self.raw, document)
 
     def test_cli_persists_freeze_before_loading_real_data(self):

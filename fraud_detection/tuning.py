@@ -26,6 +26,7 @@ from .modeling import (
     FeatureGroups,
     build_preprocessor,
     candidate_models,
+    extract_stable_ids,
     prepare_model_data,
     probability_metrics,
     stratified_split,
@@ -405,7 +406,10 @@ def run_tuning_experiment(
     """Tune on Train, select on Validation, then confirm once on Test."""
     X, y, groups = prepare_model_data(raw, DEFAULT_FEATURES)
     _validate_primary_benchmark(groups)
-    partitions: BenchmarkPartitions = stratified_split(y, random_state)
+    stable_ids = extract_stable_ids(raw, y.index)
+    partitions: BenchmarkPartitions = stratified_split(
+        y, random_state, stable_ids=stable_ids
+    )
     X_train, y_train = X.loc[partitions.train], y.loc[partitions.train]
     X_validation, y_validation = X.loc[partitions.validation], y.loc[partitions.validation]
 

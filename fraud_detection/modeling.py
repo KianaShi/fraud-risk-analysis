@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,7 +26,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBClassifier
 
-from .common import require_columns
+from .common import normalize_columns, require_columns
 from .vendor import BOOLEAN_COLUMNS, CATEGORICAL_COLUMNS, NUMERIC_COLUMNS, clean_vendor_data
 
 
@@ -65,15 +67,23 @@ DEFAULT_FEATURES = FeatureGroups(
     boolean=BOOLEAN_COLUMNS,
     categorical=CATEGORICAL_COLUMNS,
 )
+SPLIT_ID_COLUMN = "id"
+SPLIT_PROTOCOL_VERSION = "stable-id-stratified-70-15-15-v1"
 
 
 def prepare_model_data(
-    raw: pd.DataFrame, groups: FeatureGroups = DEFAULT_FEATURES
+    raw: pd.DataFrame,
+    groups: FeatureGroups = DEFAULT_FEATURES,
+    *,
+    allow_partial: bool = False,
 ) -> tuple[pd.DataFrame, pd.Series, FeatureGroups]:
-    """Clean a frame and return features, binary target, and available groups."""
+    """Clean a frame and return the exact requested feature schema by default."""
     frame = clean_vendor_data(raw)
-    available = groups.subset([column for column in groups.all if column in frame])
-    require_columns(frame, available.all)
+    if allow_partial:
+        available = groups.subset([column for column in groups.all if column in frame])
+    else:
+        require_columns(frame, groups.all)
+        available = groups
     keep = frame["is_fraud"].notna()
     target = frame.loc[keep, "is_fraud"].astype(int)
     if target.nunique() != 2:
@@ -81,12 +91,51 @@ def prepare_model_data(
     return frame.loc[keep, available.all].copy(), target, available
 
 
-def stratified_split(target: pd.Series, random_state: int = 42) -> BenchmarkPartitions:
-    """Create reproducible 70/15/15 partitions stratified on the fraud label."""
+def extract_stable_ids(raw: pd.DataFrame, index: pd.Index) -> pd.Series:
+    """Extract the documented source record ID without adding it to predictors."""
+    normalized = normalize_columns(raw)
+    require_columns(normalized, [SPLIT_ID_COLUMN])
+    return normalized.loc[index, SPLIT_ID_COLUMN].copy()
+
+
+def _validated_stable_ids(target: pd.Series, stable_ids: pd.Series | None) -> pd.Series:
+    if stable_ids is None:
+        raise ValueError("stable_ids are required for reproducible split membership.")
+    if not isinstance(stable_ids, pd.Series) or not stable_ids.index.equals(target.index):
+        raise ValueError("stable_ids must be a pandas Series aligned exactly to target.index.")
+    if target.index.has_duplicates:
+        raise ValueError("Target row index must be unique before splitting.")
+    if stable_ids.isna().any():
+        raise ValueError(f"stable_ids contain {int(stable_ids.isna().sum())} missing values.")
+    canonical = stable_ids.astype("string").str.strip()
+    missing_tokens = canonical.eq("") | canonical.str.lower().eq("null")
+    if missing_tokens.any():
+        raise ValueError(
+            f"stable_ids contain {int(missing_tokens.sum())} blank/null values."
+        )
+    if canonical.duplicated().any():
+        raise ValueError(
+            f"stable_ids contain {int(canonical.duplicated(keep=False).sum())} duplicate rows."
+        )
+    return canonical
+
+
+def stratified_split(
+    target: pd.Series,
+    random_state: int = 42,
+    *,
+    stable_ids: pd.Series | None = None,
+) -> BenchmarkPartitions:
+    """Create row-order-invariant 70/15/15 partitions using stable record IDs."""
     if len(target) < 7 or target.value_counts().min() < 4:
         raise ValueError("At least four observations per class are required for a 70/15/15 split.")
+    canonical_ids = _validated_stable_ids(target, stable_ids)
+    ordered_index = canonical_ids.sort_values(kind="mergesort").index
     train_index, holdout_index = train_test_split(
-        target.index, test_size=0.30, stratify=target, random_state=random_state
+        ordered_index,
+        test_size=0.30,
+        stratify=target.loc[ordered_index],
+        random_state=random_state,
     )
     validation_index, test_index = train_test_split(
         holdout_index,
@@ -99,6 +148,28 @@ def stratified_split(target: pd.Series, random_state: int = 42) -> BenchmarkPart
         validation=pd.Index(validation_index),
         test=pd.Index(test_index),
     )
+
+
+def _membership_sha256(stable_ids: pd.Series) -> str:
+    values = sorted(stable_ids.astype("string").str.strip().tolist())
+    payload = json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def split_membership_fingerprints(
+    stable_ids: pd.Series, partitions: BenchmarkPartitions
+) -> dict[str, str]:
+    """Hash sorted stable-ID sets for the dataset and every frozen partition."""
+    return {
+        "split_protocol_version": SPLIT_PROTOCOL_VERSION,
+        "identity_column": SPLIT_ID_COLUMN,
+        "dataset_membership_sha256": _membership_sha256(stable_ids),
+        "train_membership_sha256": _membership_sha256(stable_ids.loc[partitions.train]),
+        "validation_membership_sha256": _membership_sha256(
+            stable_ids.loc[partitions.validation]
+        ),
+        "test_membership_sha256": _membership_sha256(stable_ids.loc[partitions.test]),
+    }
 
 
 def split_audit(target: pd.Series, partitions: BenchmarkPartitions) -> pd.DataFrame:
@@ -225,7 +296,8 @@ def compare_models(
 ) -> tuple[pd.DataFrame, Pipeline, pd.DataFrame]:
     """Benchmark both models on one stratified validation/test partition."""
     features, target, groups = prepare_model_data(raw)
-    partitions = stratified_split(target, random_state)
+    stable_ids = extract_stable_ids(raw, target.index)
+    partitions = stratified_split(target, random_state, stable_ids=stable_ids)
     audit = split_audit(target, partitions)
     prevalence = dict(zip(audit["split"], audit["fraud_rate"]))
     rows: list[dict[str, float | str | bool]] = []

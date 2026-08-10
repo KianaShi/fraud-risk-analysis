@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -34,15 +35,38 @@ def require_columns(frame: pd.DataFrame, columns: Iterable[str]) -> None:
 
 
 def to_binary(value: object) -> float:
-    """Convert common boolean-like values to 1.0, 0.0, or NaN."""
+    """Convert an explicit boolean-like value to 1.0, 0.0, or NaN."""
     if pd.isna(value):
         return np.nan
+    if isinstance(value, (bool, np.bool_)):
+        return float(value)
+    if isinstance(value, Real):
+        numeric = float(value)
+        if numeric in (0.0, 1.0):
+            return numeric
+        raise ValueError(f"Invalid binary value: {value!r}")
     text = str(value).strip().lower()
     if text in {"1", "true", "t", "yes", "y"}:
         return 1.0
     if text in {"0", "false", "f", "no", "n"}:
         return 0.0
-    try:
-        return float(float(text) != 0)
-    except (TypeError, ValueError):
-        return np.nan
+    raise ValueError(f"Invalid binary value: {value!r}")
+
+
+def coerce_binary_series(series: pd.Series, column: str) -> pd.Series:
+    """Coerce explicit binary tokens while reporting invalid observed values."""
+    converted: list[float] = []
+    invalid: list[object] = []
+    for value in series:
+        try:
+            converted.append(to_binary(value))
+        except ValueError:
+            converted.append(np.nan)
+            invalid.append(value)
+    if invalid:
+        examples = [str(value) for value in invalid[:5]]
+        raise ValueError(
+            f"Column {column!r} contains invalid binary values: count={len(invalid)}, "
+            f"examples={examples}"
+        )
+    return pd.Series(converted, index=series.index, dtype=float, name=series.name)

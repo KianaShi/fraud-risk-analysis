@@ -223,11 +223,12 @@ python build_production_model.py \
   --confirm-development-only
 ```
 
-Prediction requires both production artifacts to exist first:
+Prediction requires all three bound production artifacts to exist first:
 
 ```text
 artifacts/catboost_fraud_model.cbm
 artifacts/catboost_preprocessor.json
+artifacts/catboost_artifact_manifest.json
 ```
 
 A fresh clone cannot run `predict_fraud.py` until `build_production_model.py` has been run with an independently verified development-only input, or equivalent approved artifacts have been supplied. Missing artifacts produce an explicit `FileNotFoundError`.

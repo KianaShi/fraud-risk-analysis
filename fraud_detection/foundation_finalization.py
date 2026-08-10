@@ -26,14 +26,31 @@ from .foundation_models import (
     TABICL_CHECKPOINT,
     TABPFN_CHECKPOINT,
     _cuda_memory,
-    _target_only,
+    _target_and_identity,
     build_foundation_model,
 )
-from .modeling import DEFAULT_FEATURES, FeatureGroups, prepare_model_data, probability_metrics, stratified_split
+from .modeling import (
+    DEFAULT_FEATURES,
+    SPLIT_ID_COLUMN,
+    SPLIT_PROTOCOL_VERSION,
+    FeatureGroups,
+    prepare_model_data,
+    probability_metrics,
+    split_membership_fingerprints,
+    stratified_split,
+)
 
 
 FOUNDATION_LABELS = {"tabpfn_3": "TabPFN-3", "tabicl_v2": "TabICLv2"}
 EXPECTED_PACKAGES = {"tabpfn_3": ("tabpfn", "8.1.0"), "tabicl_v2": ("tabicl", "2.1.1")}
+MEMBERSHIP_FIELDS = (
+    "split_protocol_version",
+    "identity_column",
+    "dataset_membership_sha256",
+    "train_membership_sha256",
+    "validation_membership_sha256",
+    "test_membership_sha256",
+)
 
 
 def _validation_metrics(row: pd.Series) -> dict[str, float]:
@@ -54,6 +71,11 @@ def build_freeze_document(
     features = stage_c_metadata["representation"]["train"]["column_names"]
     if features != DEFAULT_FEATURES.all or len(features) != 14:
         raise ValueError("Cannot freeze anything other than the ordered full 14-feature set.")
+    membership = stage_c_metadata.get("split_membership")
+    if not isinstance(membership, Mapping) or any(
+        field not in membership for field in MEMBERSHIP_FIELDS
+    ):
+        raise ValueError("Stage C metadata lacks required stable split membership fingerprints.")
 
     models: dict[str, Any] = {}
     for model_name in MODEL_NAMES:
@@ -88,15 +110,18 @@ def build_freeze_document(
             "hpo_statement": "No model-specific hyperparameter optimization was performed.",
         }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "D",
         "freeze_timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "protocol": "Configurations frozen from Stage C before Stage E Test feature access.",
+        "split_membership": dict(membership),
         "models": models,
     }
 
 
-def validate_freeze_document(document: Mapping[str, Any]) -> None:
+def validate_freeze_document(
+    document: Mapping[str, Any], *, require_membership: bool = False
+) -> None:
     """Reject incomplete or mutated freeze documents."""
     if document.get("stage") != "D" or set(document.get("models", {})) != set(MODEL_NAMES):
         raise ValueError("Freeze document must contain both approved Stage D models.")
@@ -122,6 +147,27 @@ def validate_freeze_document(document: Mapping[str, Any]) -> None:
         raise ValueError("TabPFN categorical indices do not match Stage C.")
     if document["models"]["tabicl_v2"].get("categorical_indices") is not None:
         raise ValueError("TabICL must retain native pandas dtype categorical detection.")
+    membership = document.get("split_membership")
+    if membership is None:
+        if require_membership:
+            raise ValueError(
+                "Legacy Stage D freeze lacks membership fingerprints and cannot authorize Stage E."
+            )
+        return
+    if document.get("schema_version") != 2 or not isinstance(membership, Mapping):
+        raise ValueError("Stable membership fingerprints require Stage D schema_version 2.")
+    if any(field not in membership for field in MEMBERSHIP_FIELDS):
+        raise ValueError("Stage D membership fingerprints are incomplete.")
+    if membership["split_protocol_version"] != SPLIT_PROTOCOL_VERSION:
+        raise ValueError("Stage D split protocol version is invalid.")
+    if membership["identity_column"] != SPLIT_ID_COLUMN:
+        raise ValueError("Stage D split identity column is invalid.")
+    for field in MEMBERSHIP_FIELDS[2:]:
+        value = membership[field]
+        if not isinstance(value, str) or len(value) != 64 or any(
+            character not in "0123456789abcdef" for character in value
+        ):
+            raise ValueError(f"Stage D membership fingerprint {field!r} is invalid.")
 
 
 def persist_freeze_artifact(
@@ -161,9 +207,16 @@ def prepare_stage_e_data(
     raw: pd.DataFrame, frozen: Mapping[str, Any]
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, FeatureGroups]:
     """Access Test features only after receiving a validated frozen document."""
-    validate_freeze_document(frozen)
-    target = _target_only(raw)
-    partitions = stratified_split(target, random_state=RANDOM_STATE)
+    validate_freeze_document(frozen, require_membership=True)
+    target, stable_ids = _target_and_identity(raw)
+    partitions = stratified_split(
+        target, random_state=RANDOM_STATE, stable_ids=stable_ids
+    )
+    actual_membership = split_membership_fingerprints(stable_ids, partitions)
+    if dict(frozen["split_membership"]) != actual_membership:
+        raise ValueError(
+            "Stage E dataset/split membership fingerprint differs from the Stage D freeze."
+        )
     combined_index = partitions.train.append(partitions.validation)
     all_index = combined_index.append(partitions.test)
     features, prepared_target, groups = prepare_model_data(raw.loc[all_index])

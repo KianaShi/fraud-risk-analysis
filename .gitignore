@@ -15,3 +15,4 @@ income_vs_electricity.csv
 *.joblib
 artifacts/*.cbm
 artifacts/*_preprocessor.json
+artifacts/*_manifest.json

@@ -17,7 +17,15 @@ import numpy as np
 import pandas as pd
 
 from .common import to_snake_case
-from .modeling import DEFAULT_FEATURES, FeatureGroups, prepare_model_data, probability_metrics, stratified_split
+from .modeling import (
+    DEFAULT_FEATURES,
+    SPLIT_ID_COLUMN,
+    FeatureGroups,
+    prepare_model_data,
+    probability_metrics,
+    split_membership_fingerprints,
+    stratified_split,
+)
 from .vendor import TARGET_COLUMN, clean_vendor_data
 
 
@@ -27,43 +35,63 @@ TABICL_CHECKPOINT = "tabicl-classifier-v2-20260212.ckpt"
 MODEL_NAMES = ("tabpfn_3", "tabicl_v2")
 
 
-def _target_only(raw: pd.DataFrame) -> pd.Series:
-    """Normalize only the label column so Test feature values remain untouched."""
-    source_columns = [column for column in raw if to_snake_case(column) == TARGET_COLUMN]
-    if len(source_columns) != 1:
-        raise ValueError(f"Expected exactly one {TARGET_COLUMN!r} column.")
-    target = clean_vendor_data(raw.loc[:, source_columns])[TARGET_COLUMN]
+def _target_and_identity(raw: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Normalize only label and stable ID so Test feature values remain untouched."""
+    sources: dict[str, list[object]] = {TARGET_COLUMN: [], SPLIT_ID_COLUMN: []}
+    for column in raw:
+        normalized = to_snake_case(column)
+        if normalized in sources:
+            sources[normalized].append(column)
+    for name, columns in sources.items():
+        if len(columns) != 1:
+            raise ValueError(f"Expected exactly one {name!r} column.")
+    selected = [sources[TARGET_COLUMN][0], sources[SPLIT_ID_COLUMN][0]]
+    cleaned = clean_vendor_data(raw.loc[:, selected])
+    target = cleaned[TARGET_COLUMN]
     keep = target.notna()
     target = target.loc[keep].astype(int)
     if target.nunique() != 2:
         raise ValueError("Target must contain both fraud and non-fraud records.")
-    return target
+    return target, cleaned.loc[keep, SPLIT_ID_COLUMN].copy()
+
+
+def _target_only(raw: pd.DataFrame) -> pd.Series:
+    """Return the normalized label while enforcing availability of stable identity."""
+    return _target_and_identity(raw)[0]
 
 
 def prepare_stage_c_data(
-    raw: pd.DataFrame, random_state: int = RANDOM_STATE
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, FeatureGroups]:
+    raw: pd.DataFrame,
+    random_state: int = RANDOM_STATE,
+    *,
+    return_membership: bool = False,
+) -> tuple[Any, ...]:
     """Return only the frozen Train and Validation feature partitions.
 
     The full label vector is required to reproduce the existing stratified split.
     Feature cleaning is deliberately restricted to Train and Validation indices;
     no Test feature row is selected, cleaned, returned, fitted, or predicted.
     """
-    target = _target_only(raw)
-    partitions = stratified_split(target, random_state=random_state)
+    target, stable_ids = _target_and_identity(raw)
+    partitions = stratified_split(
+        target, random_state=random_state, stable_ids=stable_ids
+    )
     allowed_index = partitions.train.append(partitions.validation)
     features, prepared_target, groups = prepare_model_data(raw.loc[allowed_index])
     if tuple(groups.all) != tuple(DEFAULT_FEATURES.all) or len(groups.all) != 14:
         raise ValueError("Stage C requires the exact frozen 14-feature information set.")
     if not prepared_target.equals(target.loc[allowed_index]):
         raise ValueError("Prepared Train/Validation targets do not match the frozen split labels.")
-    return (
+    prepared = (
         features.loc[partitions.train].copy(),
         prepared_target.loc[partitions.train].copy(),
         features.loc[partitions.validation].copy(),
         prepared_target.loc[partitions.validation].copy(),
         groups,
     )
+    if return_membership:
+        return (*prepared, split_membership_fingerprints(stable_ids, partitions))
+    return prepared
 
 
 def _frame_fingerprint(frame: pd.DataFrame) -> str:
@@ -167,6 +195,7 @@ def evaluate_foundation_models(
     groups: FeatureGroups,
     model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
     torch_module: Any | None = None,
+    split_membership: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Fit on Train and evaluate only Validation using each native API."""
     if torch_module is None:
@@ -260,7 +289,7 @@ def evaluate_foundation_models(
         gc.collect()
         torch_module.cuda.empty_cache()
 
-    return pd.DataFrame(rows), {
+    metadata = {
         "stage": "C",
         "scope": "real_data_train_to_validation_only",
         "random_state": RANDOM_STATE,
@@ -270,6 +299,9 @@ def evaluate_foundation_models(
         "representation": audit,
         "models": model_metadata,
     }
+    if split_membership is not None:
+        metadata["split_membership"] = split_membership
+    return pd.DataFrame(rows), metadata
 
 
 def run_stage_c(
@@ -280,7 +312,9 @@ def run_stage_c(
     torch_module: Any | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Run Stage C and write Validation-only artifacts."""
-    train, y_train, validation, y_validation, groups = prepare_stage_c_data(raw)
+    train, y_train, validation, y_validation, groups, membership = prepare_stage_c_data(
+        raw, return_membership=True
+    )
     results, metadata = evaluate_foundation_models(
         train,
         y_train,
@@ -289,6 +323,7 @@ def run_stage_c(
         groups,
         model_builder=model_builder,
         torch_module=torch_module,
+        split_membership=membership,
     )
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     metadata_json.parent.mkdir(parents=True, exist_ok=True)
