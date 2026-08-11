@@ -4,6 +4,7 @@
   "random_state": 42,
   "classification_threshold": 0.5,
   "primary_metric": "pr_auc",
+  "primary_metric_implementation": "sklearn.metrics.average_precision_score",
   "packages": {
     "torch": "2.12.1+cu130",
     "tabpfn": "8.1.0",
@@ -143,7 +144,13 @@
     "tabpfn_3": {
       "status": "passed",
       "checkpoint": "tabpfn-v3-classifier-v3_default.ckpt",
-      "resolved_checkpoint_path": "C:\\Users\\kiana\\AppData\\Roaming\\tabpfn\\tabpfn-v3-classifier-v3_default.ckpt",
+      "legacy_checkpoint_provenance": {
+        "checkpoint_filename": "tabpfn-v3-classifier-v3_default.ckpt",
+        "checkpoint_sha256": null,
+        "source_repository": null,
+        "source_revision_or_snapshot": null,
+        "limitation": "The historical run recorded a local path but not a cryptographic digest; the path was redacted and this record cannot authorize a new Stage E."
+      },
       "native_preprocessing": "TabPFN native preprocessing with categorical_features_indices",
       "constructor_is_lazy": true,
       "cached_model_load_timing_scope": "included in fit_context_including_cached_load_seconds",
@@ -180,7 +187,13 @@
     "tabicl_v2": {
       "status": "passed",
       "checkpoint": "tabicl-classifier-v2-20260212.ckpt",
-      "resolved_checkpoint_path": "C:\\Users\\kiana\\.cache\\huggingface\\hub\\models--jingang--TabICL\\snapshots\\4dcd344ece2c00be9e831fdd35bed57b5ad83e19\\tabicl-classifier-v2-20260212.ckpt",
+      "legacy_checkpoint_provenance": {
+        "checkpoint_filename": "tabicl-classifier-v2-20260212.ckpt",
+        "checkpoint_sha256": null,
+        "source_repository": "jingang/TabICL",
+        "source_revision_or_snapshot": "4dcd344ece2c00be9e831fdd35bed57b5ad83e19",
+        "limitation": "The historical run did not record a cryptographic checkpoint digest; the local path was redacted and this record cannot authorize a new Stage E."
+      },
       "native_preprocessing": "TabICL native pandas dtype preprocessing",
       "constructor_is_lazy": true,
       "cached_model_load_timing_scope": "included in fit_context_including_cached_load_seconds",

@@ -64,13 +64,20 @@
     "native_model_format": "cbm"
   },
   "training": {
-    "scope": "frozen Train+Validation development partition; Test excluded",
-    "artifact_status": "not built in repository; reproducible development-only build required",
+    "scope": "historical exact Train+Validation membership was not preserved; no Test-exclusion claim can be independently verified for that historical build input",
+    "artifact_status": "not built or shipped in repository; a future build requires user attestation and a release-anchored stable-ID development-membership manifest",
     "production_artifact_built": false,
     "deployment_ready": false,
     "model_path": "artifacts/catboost_fraud_model.cbm",
     "preprocessor_path": "artifacts/catboost_preprocessor.json",
-    "build_input_attestation": "The build flag records the user's declaration that the supplied CSV excludes Test rows; the code cannot verify split membership from an arbitrary CSV."
+    "manifest_path": "artifacts/catboost_artifact_manifest.json",
+    "development_membership_manifest": "externally supplied; not available for historical v1",
+    "development_manifest_trust_anchor": "docs/config/approved_development_manifest.sha256; not configured for historical v1",
+    "build_input_attestation": "--confirm-development-only records the user's declaration only and is not proof. The separate approved membership manifest is what permits stable-ID fingerprint validation."
+  },
+  "metric_definitions": {
+    "pr_auc_implementation": "sklearn.metrics.average_precision_score",
+    "pr_auc_note": "Repository pr_auc fields are Average Precision, not trapezoidal area under a plotted PR curve."
   },
   "threshold_policy": {
     "status": "unresolved; must be supplied separately from model scoring",

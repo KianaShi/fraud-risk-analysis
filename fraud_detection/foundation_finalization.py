@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import os
 import time
 import warnings
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -22,12 +24,15 @@ import pandas as pd
 
 from .foundation_models import (
     MODEL_NAMES,
+    FOUNDATION_RUNTIME,
     RANDOM_STATE,
     TABICL_CHECKPOINT,
     TABPFN_CHECKPOINT,
     _cuda_memory,
     _target_and_identity,
     build_foundation_model,
+    package_versions,
+    protected_checkpoint_snapshots,
 )
 from .modeling import (
     DEFAULT_FEATURES,
@@ -50,6 +55,13 @@ MEMBERSHIP_FIELDS = (
     "train_membership_sha256",
     "validation_membership_sha256",
     "test_membership_sha256",
+)
+CHECKPOINT_PROVENANCE_FIELDS = (
+    "checkpoint_filename",
+    "checkpoint_sha256",
+    "source_repository",
+    "source_revision_or_snapshot",
+    "resolution",
 )
 
 
@@ -76,6 +88,8 @@ def build_freeze_document(
         field not in membership for field in MEMBERSHIP_FIELDS
     ):
         raise ValueError("Stage C metadata lacks required stable split membership fingerprints.")
+    if stage_c_metadata.get("packages") != FOUNDATION_RUNTIME:
+        raise ValueError("Stage C runtime packages do not match the approved frozen runtime.")
 
     models: dict[str, Any] = {}
     for model_name in MODEL_NAMES:
@@ -84,6 +98,11 @@ def build_freeze_document(
         if stage_c_metadata["packages"].get(package) != version:
             raise ValueError(f"Stage C {package} version does not match the approved freeze.")
         defaults = stage_c_metadata["models"][model_name]["defaults"]
+        provenance = stage_c_metadata["models"][model_name].get("checkpoint_provenance")
+        if not isinstance(provenance, Mapping) or any(
+            field not in provenance for field in CHECKPOINT_PROVENANCE_FIELDS
+        ):
+            raise ValueError(f"Stage C checkpoint provenance is missing for {model_name}.")
         checkpoint = TABPFN_CHECKPOINT if model_name == "tabpfn_3" else TABICL_CHECKPOINT
         if int(defaults["n_estimators"]) != 8 or defaults["device"] != "cuda":
             raise ValueError(f"Stage C defaults for {model_name} do not match the approved freeze.")
@@ -96,6 +115,7 @@ def build_freeze_document(
             "model_family": FOUNDATION_LABELS[model_name],
             "estimator_class": "TabPFNClassifier" if model_name == "tabpfn_3" else "TabICLClassifier",
             "checkpoint": checkpoint,
+            "checkpoint_provenance": dict(provenance),
             "n_estimators": 8,
             "random_state": RANDOM_STATE,
             "device": "cuda",
@@ -110,17 +130,19 @@ def build_freeze_document(
             "hpo_statement": "No model-specific hyperparameter optimization was performed.",
         }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "stage": "D",
         "freeze_timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "protocol": "Configurations frozen from Stage C before Stage E Test feature access.",
         "split_membership": dict(membership),
+        "runtime_packages": dict(FOUNDATION_RUNTIME),
         "models": models,
     }
 
 
 def validate_freeze_document(
-    document: Mapping[str, Any], *, require_membership: bool = False
+    document: Mapping[str, Any], *, require_membership: bool = False,
+    require_checkpoint_provenance: bool = False,
 ) -> None:
     """Reject incomplete or mutated freeze documents."""
     if document.get("stage") != "D" or set(document.get("models", {})) != set(MODEL_NAMES):
@@ -149,13 +171,13 @@ def validate_freeze_document(
         raise ValueError("TabICL must retain native pandas dtype categorical detection.")
     membership = document.get("split_membership")
     if membership is None:
-        if require_membership:
+        if require_membership or document.get("schema_version") in (2, 3):
             raise ValueError(
                 "Legacy Stage D freeze lacks membership fingerprints and cannot authorize Stage E."
             )
         return
-    if document.get("schema_version") != 2 or not isinstance(membership, Mapping):
-        raise ValueError("Stable membership fingerprints require Stage D schema_version 2.")
+    if document.get("schema_version") not in (2, 3) or not isinstance(membership, Mapping):
+        raise ValueError("Stable membership fingerprints require Stage D schema_version 2 or 3.")
     if any(field not in membership for field in MEMBERSHIP_FIELDS):
         raise ValueError("Stage D membership fingerprints are incomplete.")
     if membership["split_protocol_version"] != SPLIT_PROTOCOL_VERSION:
@@ -168,6 +190,114 @@ def validate_freeze_document(
             character not in "0123456789abcdef" for character in value
         ):
             raise ValueError(f"Stage D membership fingerprint {field!r} is invalid.")
+    if document.get("schema_version") != 3:
+        if require_checkpoint_provenance:
+            raise ValueError(
+                "Legacy Stage D freeze lacks verified checkpoint provenance and cannot authorize Stage E."
+            )
+        return
+    if document.get("runtime_packages") != FOUNDATION_RUNTIME:
+        raise ValueError("Stage D foundation runtime package provenance is invalid.")
+    for model_name in MODEL_NAMES:
+        provenance = document["models"][model_name].get("checkpoint_provenance")
+        if not isinstance(provenance, Mapping) or any(
+            field not in provenance for field in CHECKPOINT_PROVENANCE_FIELDS
+        ):
+            raise ValueError(f"Stage D checkpoint provenance is incomplete for {model_name}.")
+        digest = provenance["checkpoint_sha256"]
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError(f"Stage D checkpoint SHA-256 is invalid for {model_name}.")
+        expected = TABPFN_CHECKPOINT if model_name == "tabpfn_3" else TABICL_CHECKPOINT
+        if provenance["checkpoint_filename"] != expected:
+            raise ValueError(f"Stage D checkpoint filename is invalid for {model_name}.")
+
+
+def ensure_stage_e_outputs_available(
+    output_paths: tuple[Path, ...], *, allow_test_reproduction: bool
+) -> None:
+    """Refuse to overwrite any final Stage E output unless explicitly authorized."""
+    existing = [str(path) for path in output_paths if path.exists()]
+    if existing and not allow_test_reproduction:
+        raise FileExistsError(
+            "Final Stage E artifacts already exist; refusing Test reevaluation/overwrite: "
+            f"{existing}. Use --allow-test-reproduction only for deliberate maintenance reproduction."
+        )
+
+
+def verify_foundation_runtime(frozen: Mapping[str, Any]) -> None:
+    """Require the exact runtime recorded by the new Stage D protocol."""
+    actual = package_versions()
+    if dict(frozen["runtime_packages"]) != actual:
+        raise RuntimeError(
+            f"Foundation runtime differs from the Stage D freeze: expected "
+            f"{dict(frozen['runtime_packages'])}, active {actual}."
+        )
+
+
+@contextmanager
+def verify_checkpoint_files(
+    frozen: Mapping[str, Any], checkpoint_paths: Mapping[str, Path] | None
+):
+    """Yield verified private snapshots that remain stable through model loading."""
+    if checkpoint_paths is None or set(checkpoint_paths) != set(MODEL_NAMES):
+        raise ValueError("Stage E requires explicit checkpoint paths for both frozen models.")
+    with protected_checkpoint_snapshots(dict(checkpoint_paths)) as snapshots:
+        for model_name, path in snapshots.items():
+            provenance = frozen["models"][model_name]["checkpoint_provenance"]
+            digest_builder = hashlib.sha256()
+            with path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest_builder.update(block)
+            if digest_builder.hexdigest() != provenance["checkpoint_sha256"]:
+                raise ValueError(f"Checkpoint SHA-256 differs from freeze for {model_name}.")
+        yield snapshots
+
+
+@contextmanager
+def stage_e_output_reservation(
+    output_paths: tuple[Path, ...], *, allow_test_reproduction: bool
+):
+    """Hold an atomic filesystem reservation through Stage E evaluation and writes."""
+    if not output_paths:
+        raise ValueError("Stage E requires at least one final output path.")
+    lock_paths = tuple(
+        parent / ".foundation-stage-e.lock"
+        for parent in sorted(
+            {Path(path).parent.resolve() for path in output_paths},
+            key=lambda path: os.path.normcase(str(path)),
+        )
+    )
+    acquired: list[tuple[Path, int]] = []
+    try:
+        for lock_path in lock_paths:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError as error:
+                try:
+                    recorded_pid = lock_path.read_text(encoding="ascii").strip() or "unavailable"
+                except OSError:
+                    recorded_pid = "unavailable"
+                raise RuntimeError(
+                    "Another Stage E run already owns the output reservation: "
+                    f"{lock_path} (recorded PID: {recorded_pid}). Confirm that no Stage E "
+                    "process corresponding to this lock is still running before removing it "
+                    "manually; stale locks are never removed automatically."
+                ) from error
+            acquired.append((lock_path, descriptor))
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+        ensure_stage_e_outputs_available(
+            output_paths, allow_test_reproduction=allow_test_reproduction
+        )
+        yield tuple(path for path, unused_descriptor in acquired)
+    finally:
+        for lock_path, descriptor in reversed(acquired):
+            try:
+                os.close(descriptor)
+            finally:
+                lock_path.unlink(missing_ok=True)
 
 
 def persist_freeze_artifact(
@@ -207,7 +337,9 @@ def prepare_stage_e_data(
     raw: pd.DataFrame, frozen: Mapping[str, Any]
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, FeatureGroups]:
     """Access Test features only after receiving a validated frozen document."""
-    validate_freeze_document(frozen, require_membership=True)
+    validate_freeze_document(
+        frozen, require_membership=True, require_checkpoint_provenance=True
+    )
     target, stable_ids = _target_and_identity(raw)
     partitions = stratified_split(
         target, random_state=RANDOM_STATE, stable_ids=stable_ids
@@ -250,8 +382,9 @@ def evaluate_frozen_test_models(
     y_test: pd.Series,
     groups: FeatureGroups,
     frozen: Mapping[str, Any],
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
+    checkpoint_paths: Mapping[str, Path] | None = None,
 ) -> pd.DataFrame:
     """Evaluate each immutable frozen model exactly once on Test."""
     validate_freeze_document(frozen)
@@ -273,7 +406,11 @@ def evaluate_frozen_test_models(
             with warnings.catch_warnings(record=True) as records:
                 warnings.simplefilter("always")
                 started = time.perf_counter()
-                model = model_builder(model_name, groups)
+                model = model_builder(
+                    model_name,
+                    groups,
+                    checkpoint_paths[model_name] if checkpoint_paths else None,
+                )
                 _verify_model_against_freeze(model_name, model, config)
                 torch_module.cuda.synchronize()
                 initialization_seconds = time.perf_counter() - started
@@ -373,7 +510,7 @@ def build_model_family_comparison(
 
 
 def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) -> None:
-    """Generate the single requested Validation/Test PR-AUC comparison figure."""
+    """Generate the requested Validation/Test Average Precision comparison figure."""
     plt.style.use("seaborn-v0_8-whitegrid")
     positions = np.arange(len(comparison))
     width = 0.36
@@ -382,21 +519,21 @@ def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) ->
         positions - width / 2,
         comparison["validation_pr_auc"],
         width,
-        label="Validation PR-AUC",
+        label="Validation Average Precision",
         color="#2F6B9A",
     )
     test = axis.bar(
         positions + width / 2,
         comparison["test_pr_auc"],
         width,
-        label="Test PR-AUC",
+        label="Test Average Precision",
         color="#2A9D8F",
     )
     axis.bar_label(validation, fmt="%.3f", padding=3, fontsize=9)
     axis.bar_label(test, fmt="%.3f", padding=3, fontsize=9)
     axis.set_xticks(positions, comparison["model"])
     axis.set_ylim(0.90, 0.99)
-    axis.set(title="Frozen Model Family Comparison", ylabel="PR-AUC")
+    axis.set(title="Frozen Model Family Comparison", ylabel="Average Precision")
     axis.legend(frameon=False)
     figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -404,7 +541,7 @@ def generate_model_family_figure(comparison: pd.DataFrame, output_path: Path) ->
     plt.close(figure)
 
 
-def run_stage_e(
+def _run_stage_e_reserved(
     raw: pd.DataFrame,
     freeze_json: Path,
     foundation_validation_csv: Path,
@@ -413,22 +550,26 @@ def run_stage_e(
     foundation_test_csv: Path,
     comparison_csv: Path,
     figure_path: Path,
-    model_builder: Callable[[str, FeatureGroups], Any] = build_foundation_model,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
     torch_module: Any | None = None,
+    checkpoint_paths: Mapping[str, Path] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the gated one-time Stage E confirmation and final comparisons."""
+    """Run Stage E while the caller holds the output reservation."""
     frozen = load_frozen_configs(freeze_json)
     train_validation, y_train_validation, test, y_test, groups = prepare_stage_e_data(raw, frozen)
-    test_results = evaluate_frozen_test_models(
-        train_validation,
-        y_train_validation,
-        test,
-        y_test,
-        groups,
-        frozen,
-        model_builder=model_builder,
-        torch_module=torch_module,
-    )
+    verify_foundation_runtime(frozen)
+    with verify_checkpoint_files(frozen, checkpoint_paths) as verified_checkpoints:
+        test_results = evaluate_frozen_test_models(
+            train_validation,
+            y_train_validation,
+            test,
+            y_test,
+            groups,
+            frozen,
+            model_builder=model_builder,
+            torch_module=torch_module,
+            checkpoint_paths=verified_checkpoints,
+        )
     foundation_test_csv.parent.mkdir(parents=True, exist_ok=True)
     test_results.to_csv(foundation_test_csv, index=False)
     if not test_results["status"].eq("passed").all():
@@ -442,3 +583,37 @@ def run_stage_e(
     comparison.to_csv(comparison_csv, index=False)
     generate_model_family_figure(comparison, figure_path)
     return test_results, comparison
+
+
+def run_stage_e(
+    raw: pd.DataFrame,
+    freeze_json: Path,
+    foundation_validation_csv: Path,
+    classical_validation_csv: Path,
+    classical_test_csv: Path,
+    foundation_test_csv: Path,
+    comparison_csv: Path,
+    figure_path: Path,
+    model_builder: Callable[[str, FeatureGroups, Path | None], Any] = build_foundation_model,
+    torch_module: Any | None = None,
+    checkpoint_paths: Mapping[str, Path] | None = None,
+    allow_test_reproduction: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reserve outputs atomically, then run the gated Stage E critical section."""
+    outputs = (foundation_test_csv, comparison_csv, figure_path)
+    with stage_e_output_reservation(
+        outputs, allow_test_reproduction=allow_test_reproduction
+    ):
+        return _run_stage_e_reserved(
+            raw,
+            freeze_json,
+            foundation_validation_csv,
+            classical_validation_csv,
+            classical_test_csv,
+            foundation_test_csv,
+            comparison_csv,
+            figure_path,
+            model_builder=model_builder,
+            torch_module=torch_module,
+            checkpoint_paths=checkpoint_paths,
+        )

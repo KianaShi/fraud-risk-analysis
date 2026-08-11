@@ -213,7 +213,7 @@ def permutation_importance_table(
     models: dict[str, object], X_validation: pd.DataFrame, y_validation: pd.Series,
     n_repeats: int = 8, random_state: int = 42,
 ) -> pd.DataFrame:
-    """Measure validation PR-AUC permutation importance at original-feature level."""
+    """Measure validation Average Precision permutation importance by source feature."""
     rows = []
     for model_name, model in models.items():
         result = permutation_importance(
@@ -289,7 +289,7 @@ def evaluate_configurations(
 
 
 def _choose_final_configuration(candidate_rows: pd.DataFrame, tolerance: float = 0.002) -> str:
-    """Choose the smallest configuration within tolerance of best mean validation PR-AUC."""
+    """Choose the smallest configuration within tolerance of mean validation Average Precision."""
     summary = candidate_rows.groupby("feature_configuration", as_index=False).agg(
         mean_validation_pr_auc=("validation_pr_auc", "mean"), n_features=("n_features", "first")
     )

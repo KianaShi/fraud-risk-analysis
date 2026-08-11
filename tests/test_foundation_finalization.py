@@ -1,8 +1,10 @@
 """Checkpoint-free tests for gated Stage D freezing and Stage E confirmation."""
 
 import json
+import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,12 +14,22 @@ import pandas as pd
 from fraud_detection.foundation_finalization import (
     build_freeze_document,
     evaluate_frozen_test_models,
+    ensure_stage_e_outputs_available,
     load_frozen_configs,
     persist_freeze_artifact,
     prepare_stage_e_data,
+    run_stage_e,
+    stage_e_output_reservation,
     validate_freeze_document,
+    verify_checkpoint_files,
 )
-from fraud_detection.foundation_models import MODEL_NAMES, prepare_stage_c_data, run_stage_c
+from fraud_detection.foundation_models import (
+    MODEL_NAMES,
+    TABICL_CHECKPOINT,
+    TABPFN_CHECKPOINT,
+    prepare_stage_c_data,
+    run_stage_c,
+)
 from fraud_detection.modeling import split_membership_fingerprints, stratified_split
 from tests.test_foundation_models import FakeTorch, RecordingModel
 import finalize_foundation_models as finalization_cli
@@ -59,7 +71,11 @@ class FoundationFinalizationTests(unittest.TestCase):
         }
         self.metadata = {
             "stage": "C",
-            "packages": {"tabpfn": "8.1.0", "tabicl": "2.1.1"},
+            "packages": {
+                "torch": "2.12.1+cu130",
+                "tabpfn": "8.1.0",
+                "tabicl": "2.1.1",
+            },
             "representation": {"train": {"column_names": [
                 "ea_score", "identity_rank", "reputation_level", "volume_score",
                 "result_number", "email_days", "is_valid", "is_connected",
@@ -67,7 +83,19 @@ class FoundationFinalizationTests(unittest.TestCase):
                 "device_browser_type", "ip_address_loc_country", "type",
             ]}},
             "models": {
-                name: {"defaults": defaults[name], "native_preprocessing": "native"}
+                name: {
+                    "defaults": defaults[name],
+                    "native_preprocessing": "native",
+                    "checkpoint_provenance": {
+                        "checkpoint_filename": (
+                            TABPFN_CHECKPOINT if name == "tabpfn_3" else TABICL_CHECKPOINT
+                        ),
+                        "checkpoint_sha256": ("0" if name == "tabpfn_3" else "1") * 64,
+                        "source_repository": None if name == "tabpfn_3" else "jingang/TabICL",
+                        "source_revision_or_snapshot": None,
+                        "resolution": "synthetic verified file",
+                    },
+                }
                 for name in MODEL_NAMES
             },
         }
@@ -87,12 +115,17 @@ class FoundationFinalizationTests(unittest.TestCase):
         persist_freeze_artifact(validation, metadata, freeze)
         return freeze
 
+    def _write_document(self, root, document):
+        freeze = root / "synthetic-freeze.json"
+        freeze.write_text(json.dumps(document), encoding="utf-8")
+        return freeze
+
     def test_both_configs_are_frozen_and_reloaded_before_stage_e(self):
         with tempfile.TemporaryDirectory() as directory:
             freeze = self._persist(Path(directory))
             reloaded = json.loads(freeze.read_text(encoding="utf-8"))
             validate_freeze_document(reloaded)
-            self.assertEqual(reloaded["schema_version"], 2)
+            self.assertEqual(reloaded["schema_version"], 3)
             self.assertEqual(
                 reloaded["split_membership"], self.metadata["split_membership"]
             )
@@ -105,7 +138,7 @@ class FoundationFinalizationTests(unittest.TestCase):
         models = {name: RecordingModel(name) for name in MODEL_NAMES}
         with tempfile.TemporaryDirectory() as directory, patch(
             "fraud_detection.foundation_models.package_versions",
-            return_value={"torch": "x", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
+            return_value={"torch": "2.12.1+cu130", "tabpfn": "8.1.0", "tabicl": "2.1.1"},
         ):
             root = Path(directory)
             validation = root / "validation.csv"
@@ -115,7 +148,7 @@ class FoundationFinalizationTests(unittest.TestCase):
                 self.raw,
                 validation,
                 metadata,
-                model_builder=lambda name, unused: models[name],
+                model_builder=lambda name, unused, checkpoint_path=None: models[name],
                 torch_module=FakeTorch(),
             )
             persist_freeze_artifact(validation, metadata, freeze)
@@ -153,7 +186,7 @@ class FoundationFinalizationTests(unittest.TestCase):
                 y_test,
                 groups,
                 frozen,
-                model_builder=lambda name, unused: models[name],
+                model_builder=lambda name, unused, checkpoint_path=None: models[name],
                 torch_module=FakeTorch(),
             )
             self.assertEqual(results["classification_threshold"].unique().tolist(), [0.5])
@@ -204,6 +237,239 @@ class FoundationFinalizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "membership fingerprint"):
             prepare_stage_e_data(self.raw, document)
 
+    def test_stage_d_requires_verified_checkpoint_provenance(self):
+        metadata = json.loads(json.dumps(self.metadata))
+        del metadata["models"]["tabpfn_3"]["checkpoint_provenance"]
+        with self.assertRaisesRegex(ValueError, "checkpoint provenance"):
+            build_freeze_document(self.validation, metadata)
+
+    def test_existing_final_artifact_blocks_stage_e_before_prediction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final_test = root / "foundation_model_test.csv"
+            final_test.write_text("historical", encoding="utf-8")
+            with patch(
+                "fraud_detection.foundation_finalization.evaluate_frozen_test_models"
+            ) as evaluate:
+                with self.assertRaisesRegex(FileExistsError, "already exist"):
+                    run_stage_e(
+                        self.raw, root / "freeze.json", root / "validation.csv",
+                        root / "classical-validation.csv", root / "classical-test.csv",
+                        final_test, root / "comparison.csv", root / "comparison.png",
+                    )
+            evaluate.assert_not_called()
+            self.assertEqual(final_test.read_text(encoding="utf-8"), "historical")
+
+    def test_no_final_artifact_allows_normal_stage_e_guard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ensure_stage_e_outputs_available(
+                (root / "test.csv", root / "comparison.csv", root / "figure.png"),
+                allow_test_reproduction=False,
+            )
+
+    def test_explicit_override_allows_synthetic_stage_e_reproduction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final_test = root / "foundation_model_test.csv"
+            final_test.write_text("historical", encoding="utf-8")
+            fake_prepared = (
+                pd.DataFrame(), pd.Series(dtype=int), pd.DataFrame(),
+                pd.Series(dtype=int), object(),
+            )
+            passed = pd.DataFrame([{"status": "passed"}])
+            comparison = pd.DataFrame([{"model": "synthetic"}])
+            with patch(
+                "fraud_detection.foundation_finalization.load_frozen_configs", return_value={}
+            ), patch(
+                "fraud_detection.foundation_finalization.prepare_stage_e_data",
+                return_value=fake_prepared,
+            ), patch(
+                "fraud_detection.foundation_finalization.evaluate_frozen_test_models",
+                return_value=passed,
+            ), patch(
+                "fraud_detection.foundation_finalization.build_model_family_comparison",
+                return_value=comparison,
+            ), patch(
+                "fraud_detection.foundation_finalization.generate_model_family_figure"
+            ), patch(
+                "fraud_detection.foundation_finalization.verify_foundation_runtime"
+            ), patch(
+                "fraud_detection.foundation_finalization.verify_checkpoint_files",
+                return_value=nullcontext({}),
+            ), patch(
+                "fraud_detection.foundation_finalization.pd.read_csv",
+                return_value=pd.DataFrame(),
+            ):
+                result, _ = run_stage_e(
+                    self.raw, root / "freeze.json", root / "validation.csv",
+                    root / "classical-validation.csv", root / "classical-test.csv",
+                    final_test, root / "comparison.csv", root / "comparison.png",
+                    allow_test_reproduction=True,
+                )
+            self.assertTrue(result["status"].eq("passed").all())
+
+    def test_override_does_not_bypass_membership_validation(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        document["split_membership"]["test_membership_sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            freeze = root / "freeze.json"
+            freeze.write_text(json.dumps(document), encoding="utf-8")
+            existing = root / "foundation_model_test.csv"
+            existing.write_text("historical", encoding="utf-8")
+            with patch(
+                "fraud_detection.foundation_finalization.evaluate_frozen_test_models"
+            ) as evaluate, self.assertRaisesRegex(ValueError, "membership fingerprint"):
+                run_stage_e(
+                    self.raw, freeze, root / "validation.csv",
+                    root / "classical-validation.csv", root / "classical-test.csv",
+                    existing, root / "comparison.csv", root / "comparison.png",
+                    allow_test_reproduction=True,
+                )
+            evaluate.assert_not_called()
+
+    def test_checkpoint_files_must_match_frozen_hashes(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for name in MODEL_NAMES:
+                provenance = document["models"][name]["checkpoint_provenance"]
+                path = root / provenance["checkpoint_filename"]
+                path.write_bytes(b"wrong checkpoint bytes")
+                paths[name] = path
+            with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
+                with verify_checkpoint_files(document, paths):
+                    pass
+
+    def test_stage_e_reservation_spans_distinct_output_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "results"
+            figures = root / "figures"
+            outputs = (results / "test.csv", results / "comparison.csv", figures / "figure.png")
+            with stage_e_output_reservation(
+                outputs, allow_test_reproduction=False
+            ) as lock_paths:
+                expected = {
+                    results.resolve() / ".foundation-stage-e.lock",
+                    figures.resolve() / ".foundation-stage-e.lock",
+                }
+                self.assertEqual(set(lock_paths), expected)
+                self.assertEqual(
+                    list(lock_paths),
+                    sorted(
+                        lock_paths, key=lambda path: os.path.normcase(str(path))
+                    ),
+                )
+                self.assertTrue(all(path.is_file() for path in lock_paths))
+            self.assertTrue(all(not path.exists() for path in lock_paths))
+
+    def test_stage_e_reservations_conflict_on_shared_figures_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            figures = root / "shared-figures"
+            first = (root / "results-a" / "test.csv", figures / "figure.png")
+            second = (root / "results-b" / "test.csv", figures / "figure.png")
+            with stage_e_output_reservation(
+                first, allow_test_reproduction=False
+            ) as first_locks:
+                with self.assertRaisesRegex(RuntimeError, "already owns"):
+                    with stage_e_output_reservation(
+                        second, allow_test_reproduction=False
+                    ):
+                        pass
+                self.assertTrue(all(path.is_file() for path in first_locks))
+            self.assertTrue(all(not path.exists() for path in first_locks))
+
+    def test_stage_e_reservation_cleans_all_directories_after_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = (root / "results" / "test.csv", root / "figures" / "figure.png")
+            with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+                with stage_e_output_reservation(
+                    outputs, allow_test_reproduction=True
+                ) as lock_paths:
+                    raise RuntimeError("synthetic failure")
+            self.assertTrue(all(not path.exists() for path in lock_paths))
+
+    def test_partial_acquisition_cleans_own_locks_and_preserves_existing_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            acquired_parent = root / "a-results"
+            blocked_parent = root / "z-figures"
+            blocked_parent.mkdir()
+            existing_lock = blocked_parent / ".foundation-stage-e.lock"
+            existing_lock.write_text("424242", encoding="ascii")
+            outputs = (acquired_parent / "test.csv", blocked_parent / "figure.png")
+            with self.assertRaisesRegex(
+                RuntimeError, "recorded PID: 424242.*removing it manually.*never removed"
+            ):
+                with stage_e_output_reservation(
+                    outputs, allow_test_reproduction=False
+                ):
+                    pass
+            self.assertFalse((acquired_parent / ".foundation-stage-e.lock").exists())
+            self.assertEqual(existing_lock.read_text(encoding="ascii"), "424242")
+
+    def test_pid_write_failure_closes_descriptor_and_removes_created_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / ".foundation-stage-e.lock"
+            with patch(
+                "fraud_detection.foundation_finalization.os.write",
+                side_effect=OSError("synthetic PID write failure"),
+            ), self.assertRaisesRegex(OSError, "synthetic PID write failure"):
+                with stage_e_output_reservation(
+                    (root / "test.csv",), allow_test_reproduction=False
+                ):
+                    pass
+            self.assertFalse(lock_path.exists())
+
+    def test_verified_snapshot_bytes_are_passed_to_model_builder(self):
+        document = build_freeze_document(self.validation, self.metadata)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            approved = {}
+            for name in MODEL_NAMES:
+                payload = f"approved-{name}".encode()
+                provenance = document["models"][name]["checkpoint_provenance"]
+                path = root / provenance["checkpoint_filename"]
+                path.write_bytes(payload)
+                provenance["checkpoint_sha256"] = __import__("hashlib").sha256(payload).hexdigest()
+                paths[name] = path
+                approved[name] = payload
+            with verify_checkpoint_files(document, paths) as snapshots:
+                for path in paths.values():
+                    path.write_bytes(b"replaced after verification")
+                captured = {}
+
+                def builder(name, groups, checkpoint_path):
+                    del groups
+                    captured[name] = Path(checkpoint_path).read_bytes()
+                    model = RecordingModel(name)
+                    model.get_params = lambda deep=False, name=name: {
+                        "n_estimators": 8,
+                        "random_state": 42,
+                        "device": "cuda",
+                        "categorical_features_indices": [10, 11, 12, 13],
+                        "checkpoint_version": TABICL_CHECKPOINT,
+                    }
+                    return model
+
+                frozen = load_frozen_configs(self._write_document(root, document))
+                train_validation, y_train_validation, test, y_test, groups = prepare_stage_e_data(
+                    self.raw, frozen
+                )
+                evaluate_frozen_test_models(
+                    train_validation, y_train_validation, test, y_test, groups, frozen,
+                    model_builder=builder, torch_module=FakeTorch(),
+                    checkpoint_paths=snapshots,
+                )
+            self.assertEqual(captured, approved)
+
     def test_legacy_freeze_remains_loadable_but_cannot_authorize_stage_e(self):
         document = build_freeze_document(self.validation, self.metadata)
         document["schema_version"] = 1
@@ -220,6 +486,9 @@ class FoundationFinalizationTests(unittest.TestCase):
             input=Path("real.csv"),
             results_dir=Path("results"),
             figures_dir=Path("figures"),
+            tabpfn_checkpoint=Path("tabpfn.ckpt"),
+            tabicl_checkpoint=Path("tabicl.ckpt"),
+            allow_test_reproduction=False,
         )
 
         def fake_persist(*unused):
@@ -250,6 +519,36 @@ class FoundationFinalizationTests(unittest.TestCase):
         self.assertEqual(
             events, ["freeze_persisted_and_reloaded", "real_data_loaded", "stage_e"]
         )
+
+    def test_cli_existing_final_output_fails_before_freeze_or_real_data_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "results"
+            figures = root / "figures"
+            results.mkdir()
+            (results / "foundation_model_test.csv").write_text(
+                "historical", encoding="utf-8"
+            )
+            args = SimpleNamespace(
+                test_only=False,
+                freeze_only=False,
+                input=root / "real.csv",
+                results_dir=results,
+                figures_dir=figures,
+                tabpfn_checkpoint=root / "tabpfn.ckpt",
+                tabicl_checkpoint=root / "tabicl.ckpt",
+                allow_test_reproduction=False,
+            )
+            with patch.object(
+                finalization_cli, "parse_args", return_value=args
+            ), patch.object(
+                finalization_cli, "persist_freeze_artifact"
+            ) as persist, patch.object(
+                finalization_cli.pd, "read_csv"
+            ) as read_csv, self.assertRaisesRegex(FileExistsError, "already exist"):
+                finalization_cli.main()
+            persist.assert_not_called()
+            read_csv.assert_not_called()
 
 
 if __name__ == "__main__":

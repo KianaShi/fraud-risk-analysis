@@ -1,0 +1,9 @@
+# Historical pinned constraints/provenance supported by tracked Fraud v1.0 runtime evidence.
+# This is not a standalone or universal installation file; CUDA PyTorch resolution can
+# require the matching PyTorch package index and platform-specific compatibility.
+# This is intentionally incomplete: the historical XGBoost and broader Python/scikit-learn
+# environment versions were not preserved and must not be inferred retroactively.
+catboost==1.2.10
+tabpfn==8.1.0
+tabicl==2.1.1
+torch==2.12.1+cu130
